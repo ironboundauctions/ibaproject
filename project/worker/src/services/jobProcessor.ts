@@ -35,39 +35,19 @@ export class JobProcessor {
         fileType: file.file_type,
       });
 
-      if (!this.imageProcessor.isImage(file.file_type)) {
-        logger.info('Skipping non-image file (direct copy)', {
-          fileId: file.id,
-          fileType: file.file_type,
-        });
-        throw new Error('Video processing not yet implemented');
-      }
-
       const sourceBuffer = await this.raid.downloadFile(file.file_key);
 
-      const variants = await this.imageProcessor.processImage(sourceBuffer);
-
-      const cdnKeyPrefix = this.storage.generateCdnKeyPrefix(file.asset_group_id);
-
-      const { thumbUrl, displayUrl } = await this.storage.uploadVariants(
-        file.asset_group_id,
-        variants.thumb,
-        variants.display
-      );
-
-      await this.db.markJobCompleted(
-        job.id,
-        job.file_id,
-        cdnKeyPrefix,
-        thumbUrl,
-        displayUrl
-      );
+      if (this.imageProcessor.isImage(file.file_type)) {
+        await this.processImage(job, file, sourceBuffer);
+      } else if (this.imageProcessor.isVideo(file.file_type)) {
+        await this.processVideo(job, file, sourceBuffer);
+      } else {
+        throw new Error(`Unsupported file type: ${file.file_type}`);
+      }
 
       logger.info('Job completed successfully', {
         jobId: job.id,
         fileId: job.file_id,
-        thumbUrl,
-        displayUrl,
       });
 
       return true;
@@ -79,5 +59,70 @@ export class JobProcessor {
 
       return true;
     }
+  }
+
+  private async processImage(job: any, file: any, sourceBuffer: Buffer): Promise<void> {
+    logger.info('Processing image', { fileId: file.id });
+
+    const variants = await this.imageProcessor.processImage(sourceBuffer);
+
+    const cdnKeyPrefix = this.storage.generateCdnKeyPrefix(file.asset_group_id);
+
+    const { thumbUrl, displayUrl } = await this.storage.uploadVariants(
+      file.asset_group_id,
+      variants.thumb.buffer,
+      variants.display.buffer
+    );
+
+    await this.db.upsertVariant(file.asset_group_id, 'thumb', thumbUrl, {
+      width: variants.thumb.width,
+      height: variants.thumb.height,
+    });
+
+    await this.db.upsertVariant(file.asset_group_id, 'display', displayUrl, {
+      width: variants.display.width,
+      height: variants.display.height,
+    });
+
+    await this.db.markJobCompleted(
+      job.id,
+      job.file_id,
+      cdnKeyPrefix,
+      thumbUrl,
+      displayUrl
+    );
+
+    logger.info('Image processed successfully', {
+      fileId: file.id,
+      thumbUrl,
+      displayUrl,
+    });
+  }
+
+  private async processVideo(job: any, file: any, sourceBuffer: Buffer): Promise<void> {
+    logger.info('Processing video', { fileId: file.id, mimeType: file.file_type });
+
+    const videoUrl = await this.storage.uploadVideo(
+      file.asset_group_id,
+      sourceBuffer,
+      file.file_type
+    );
+
+    await this.db.upsertVariant(file.asset_group_id, 'video', videoUrl, {});
+
+    const cdnKeyPrefix = this.storage.generateCdnKeyPrefix(file.asset_group_id);
+
+    await this.db.markJobCompleted(
+      job.id,
+      job.file_id,
+      cdnKeyPrefix,
+      '',
+      videoUrl
+    );
+
+    logger.info('Video processed successfully', {
+      fileId: file.id,
+      videoUrl,
+    });
   }
 }

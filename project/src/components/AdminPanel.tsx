@@ -18,6 +18,7 @@ import IronDriveConnectionTest from './IronDriveConnectionTest';
 import { AdminManagementPanel } from './AdminManagementPanel';
 import { UserPromotionPanel } from './UserPromotionPanel';
 import OrphanedFilesCheckerUI from './OrphanedFilesChecker';
+import { RecentlyRemovedFiles } from './RecentlyRemovedFiles';
 
 interface AdminPanelProps {
   onBack: () => void;
@@ -255,6 +256,17 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
               Inventory
             </button>
             <button
+              onClick={() => handleTabChange('recently-removed')}
+              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
+                activeTab === 'recently-removed'
+                  ? 'border-ironbound-orange-500 text-ironbound-orange-500'
+                  : 'border-transparent text-white hover:text-ironbound-orange-300 hover:border-ironbound-orange-300'
+              }`}
+            >
+              <Trash2 className="h-4 w-4 inline mr-2" />
+              Recently Removed
+            </button>
+            <button
               onClick={() => handleTabChange('user-management')}
               className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'user-management'
@@ -454,6 +466,11 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
         {/* Inventory Management Tab */}
         {activeTab === 'inventory' && (
           <GlobalInventoryManagement />
+        )}
+
+        {/* Recently Removed Tab */}
+        {activeTab === 'recently-removed' && (
+          <RecentlyRemovedFiles />
         )}
 
         {/* Auctions Management Tab */}

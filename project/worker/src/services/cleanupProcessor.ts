@@ -50,6 +50,16 @@ export class CleanupProcessor {
       assetGroupId: file.asset_group_id
     });
 
+    const hasActive = await this.db.hasActiveReferences(file.asset_group_id);
+
+    if (hasActive) {
+      logger.info('Skipping cleanup - asset group has active references', {
+        fileId: file.id,
+        assetGroupId: file.asset_group_id
+      });
+      return;
+    }
+
     let b2DeletionSuccess = false;
     let dbDeletionSuccess = false;
     let errorMessage: string | null = null;

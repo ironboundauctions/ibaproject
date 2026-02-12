@@ -1,0 +1,211 @@
+import pg from 'pg';
+import { config } from '../config.js';
+import { logger } from '../logger.js';
+
+const { Pool } = pg;
+
+export interface PublishJob {
+  id: string;
+  file_id: string;
+  asset_group_id: string | null;
+  source_item_id: string | null;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  priority: number;
+  retry_count: number;
+  max_retries: number;
+  error_message: string | null;
+  run_after: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface AuctionFile {
+  id: string;
+  file_key: string;
+  file_name: string;
+  file_type: string;
+  asset_group_id: string;
+  cdn_key_prefix: string | null;
+  thumb_url: string | null;
+  display_url: string | null;
+  publish_status: string;
+}
+
+export class DatabaseService {
+  private pool: pg.Pool;
+
+  constructor() {
+    this.pool = new Pool({
+      connectionString: config.database.url,
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+
+    this.pool.on('error', (err) => {
+      logger.error('Unexpected database error', err);
+    });
+  }
+
+  async getNextJob(): Promise<PublishJob | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const result = await client.query<PublishJob>(
+        `UPDATE publish_jobs
+         SET status = 'processing',
+             started_at = NOW(),
+             updated_at = NOW()
+         WHERE id = (
+           SELECT id
+           FROM publish_jobs
+           WHERE status IN ('pending', 'failed')
+             AND retry_count < max_retries
+             AND run_after <= NOW()
+           ORDER BY priority DESC, run_after ASC, created_at ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1
+         )
+         RETURNING *`
+      );
+
+      await client.query('COMMIT');
+
+      return result.rows[0] || null;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getFileById(fileId: string): Promise<AuctionFile | null> {
+    const result = await this.pool.query<AuctionFile>(
+      'SELECT * FROM auction_files WHERE id = $1',
+      [fileId]
+    );
+    return result.rows[0] || null;
+  }
+
+  async markJobCompleted(
+    jobId: string,
+    fileId: string,
+    cdnKeyPrefix: string,
+    thumbUrl: string,
+    displayUrl: string
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await client.query(
+        `UPDATE publish_jobs
+         SET status = 'completed',
+             completed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $1`,
+        [jobId]
+      );
+
+      await client.query(
+        `UPDATE auction_files
+         SET cdn_key_prefix = $1,
+             thumb_url = $2,
+             display_url = $3,
+             publish_status = 'published',
+             published_at = NOW()
+         WHERE id = $4`,
+        [cdnKeyPrefix, thumbUrl, displayUrl, fileId]
+      );
+
+      await client.query('COMMIT');
+      logger.info('Job completed successfully', { jobId, fileId });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markJobFailed(jobId: string, fileId: string, errorMessage: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const result = await client.query<{ retry_count: number; max_retries: number }>(
+        `SELECT retry_count, max_retries FROM publish_jobs WHERE id = $1`,
+        [jobId]
+      );
+
+      const job = result.rows[0];
+      const newRetryCount = job.retry_count + 1;
+      const willRetry = newRetryCount < job.max_retries;
+
+      const backoffSeconds = willRetry ? Math.pow(2, newRetryCount) * 60 : 0;
+
+      await client.query(
+        `UPDATE publish_jobs
+         SET status = $1,
+             retry_count = retry_count + 1,
+             error_message = $2,
+             run_after = NOW() + INTERVAL '${backoffSeconds} seconds',
+             completed_at = CASE WHEN $1 = 'failed' THEN NOW() ELSE completed_at END,
+             updated_at = NOW()
+         WHERE id = $3`,
+        [willRetry ? 'pending' : 'failed', errorMessage, jobId]
+      );
+
+      await client.query(
+        `UPDATE auction_files
+         SET publish_status = $1
+         WHERE id = $2`,
+        [willRetry ? 'pending' : 'failed', fileId]
+      );
+
+      await client.query('COMMIT');
+      logger.warn('Job failed', {
+        jobId,
+        fileId,
+        retryCount: newRetryCount,
+        willRetry,
+        backoffSeconds
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getFilesForCleanup(): Promise<AuctionFile[]> {
+    const result = await this.pool.query<AuctionFile>(
+      `SELECT * FROM auction_files
+       WHERE deleted_at IS NOT NULL
+         AND deleted_at < NOW() - INTERVAL '30 days'
+       ORDER BY deleted_at ASC
+       LIMIT 100`
+    );
+    return result.rows;
+  }
+
+  async deleteFiles(fileIds: string[]): Promise<void> {
+    if (fileIds.length === 0) return;
+
+    await this.pool.query(
+      `DELETE FROM auction_files WHERE id = ANY($1)`,
+      [fileIds]
+    );
+
+    logger.info('Deleted files from database', { count: fileIds.length });
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
+  }
+}

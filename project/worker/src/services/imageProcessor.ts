@@ -1,9 +1,20 @@
 import sharp from 'sharp';
 import { logger } from '../logger.js';
 
+export interface ImageMetadata {
+  width: number;
+  height: number;
+}
+
+export interface ImageVariant {
+  buffer: Buffer;
+  width: number;
+  height: number;
+}
+
 export interface ImageVariants {
-  thumb: Buffer;
-  display: Buffer;
+  thumb: ImageVariant;
+  display: ImageVariant;
 }
 
 export class ImageProcessor {
@@ -26,8 +37,8 @@ export class ImageProcessor {
       ]);
 
       logger.info('Image processed successfully', {
-        thumbSize: thumb.length,
-        displaySize: display.length,
+        thumbSize: thumb.buffer.length,
+        displaySize: display.buffer.length,
       });
 
       return { thumb, display };
@@ -37,27 +48,49 @@ export class ImageProcessor {
     }
   }
 
-  private async createThumbnail(buffer: Buffer): Promise<Buffer> {
-    return sharp(buffer)
+  private async createThumbnail(buffer: Buffer): Promise<ImageVariant> {
+    const image = sharp(buffer)
+      .rotate()
       .resize(400, 400, {
         fit: 'inside',
         withoutEnlargement: true,
       })
-      .webp({ quality: 85 })
-      .toBuffer();
+      .webp({ quality: 80 });
+
+    const processedBuffer = await image.toBuffer();
+    const metadata = await sharp(processedBuffer).metadata();
+
+    return {
+      buffer: processedBuffer,
+      width: metadata.width || 0,
+      height: metadata.height || 0,
+    };
   }
 
-  private async createDisplay(buffer: Buffer): Promise<Buffer> {
-    return sharp(buffer)
+  private async createDisplay(buffer: Buffer): Promise<ImageVariant> {
+    const image = sharp(buffer)
+      .rotate()
       .resize(1600, 1600, {
         fit: 'inside',
         withoutEnlargement: true,
       })
-      .webp({ quality: 90 })
-      .toBuffer();
+      .webp({ quality: 80 });
+
+    const processedBuffer = await image.toBuffer();
+    const metadata = await sharp(processedBuffer).metadata();
+
+    return {
+      buffer: processedBuffer,
+      width: metadata.width || 0,
+      height: metadata.height || 0,
+    };
   }
 
   isImage(mimeType: string): boolean {
     return mimeType.startsWith('image/');
+  }
+
+  isVideo(mimeType: string): boolean {
+    return mimeType.startsWith('video/');
   }
 }

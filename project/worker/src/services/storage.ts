@@ -56,6 +56,31 @@ export class StorageService {
     return { thumbUrl, displayUrl };
   }
 
+  async uploadVideo(
+    assetGroupId: string,
+    videoBuffer: Buffer,
+    mimeType: string
+  ): Promise<string> {
+    const extension = this.getVideoExtension(mimeType);
+    const videoKey = `assets/${assetGroupId}/video${extension}`;
+
+    const videoUrl = await this.uploadFile(videoKey, videoBuffer, mimeType);
+
+    return videoUrl;
+  }
+
+  private getVideoExtension(mimeType: string): string {
+    const mimeToExt: Record<string, string> = {
+      'video/mp4': '.mp4',
+      'video/quicktime': '.mov',
+      'video/webm': '.webm',
+      'video/x-msvideo': '.avi',
+      'video/x-matroska': '.mkv',
+    };
+
+    return mimeToExt[mimeType] || '.mp4';
+  }
+
   async deleteFile(key: string): Promise<void> {
     logger.debug('Deleting file from B2', { key });
 
@@ -74,13 +99,21 @@ export class StorageService {
     }
   }
 
-  async deleteAssetGroup(assetGroupId: string): Promise<void> {
-    logger.info('Deleting asset group from B2', { assetGroupId });
+  async deleteAssetGroup(assetGroupId: string, variants: string[] = ['thumb', 'display', 'video']): Promise<void> {
+    logger.info('Deleting asset group from B2', { assetGroupId, variants });
 
-    const keys = [
-      `assets/${assetGroupId}/thumb.webp`,
-      `assets/${assetGroupId}/display.webp`,
-    ];
+    const keys: string[] = [];
+
+    for (const variant of variants) {
+      if (variant === 'thumb' || variant === 'display') {
+        keys.push(`assets/${assetGroupId}/${variant}.webp`);
+      } else if (variant === 'video') {
+        const videoExtensions = ['.mp4', '.mov', '.webm', '.avi', '.mkv'];
+        for (const ext of videoExtensions) {
+          keys.push(`assets/${assetGroupId}/video${ext}`);
+        }
+      }
+    }
 
     try {
       await this.s3Client.send(
@@ -93,7 +126,7 @@ export class StorageService {
         })
       );
 
-      logger.info('Asset group deleted successfully', { assetGroupId, keys });
+      logger.info('Asset group deleted successfully', { assetGroupId, keysAttempted: keys.length });
     } catch (error) {
       logger.error('Asset group deletion failed', { assetGroupId, error: error as Error });
       throw error;

@@ -31,6 +31,11 @@ export interface AuctionFile {
   thumb_url: string | null;
   display_url: string | null;
   publish_status: string;
+  variant: string | null;
+  cdn_url: string | null;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
 }
 
 export class DatabaseService {
@@ -132,6 +137,52 @@ export class DatabaseService {
     }
   }
 
+  async upsertVariant(
+    assetGroupId: string,
+    variant: string,
+    cdnUrl: string,
+    metadata: {
+      width?: number;
+      height?: number;
+      durationSeconds?: number;
+    }
+  ): Promise<string> {
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO auction_files (
+        asset_group_id,
+        variant,
+        cdn_url,
+        width,
+        height,
+        duration_seconds,
+        file_key,
+        download_url,
+        name,
+        publish_status,
+        published_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, '', '', '', 'published', NOW())
+      ON CONFLICT (asset_group_id, variant)
+      DO UPDATE SET
+        cdn_url = EXCLUDED.cdn_url,
+        width = EXCLUDED.width,
+        height = EXCLUDED.height,
+        duration_seconds = EXCLUDED.duration_seconds,
+        publish_status = 'published',
+        published_at = NOW()
+      RETURNING id`,
+      [
+        assetGroupId,
+        variant,
+        cdnUrl,
+        metadata.width || null,
+        metadata.height || null,
+        metadata.durationSeconds || null,
+      ]
+    );
+
+    return result.rows[0].id;
+  }
+
   async markJobFailed(jobId: string, fileId: string, errorMessage: string): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -192,6 +243,19 @@ export class DatabaseService {
        LIMIT 100`
     );
     return result.rows;
+  }
+
+  async hasActiveReferences(assetGroupId: string): Promise<boolean> {
+    const result = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*) as count
+       FROM auction_files
+       WHERE asset_group_id = $1
+         AND deleted_at IS NULL`,
+      [assetGroupId]
+    );
+
+    const count = parseInt(result.rows[0]?.count || '0', 10);
+    return count > 0;
   }
 
   async deleteFiles(fileIds: string[]): Promise<void> {
