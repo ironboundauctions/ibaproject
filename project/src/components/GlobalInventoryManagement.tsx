@@ -213,15 +213,18 @@ export default function GlobalInventoryManagement() {
     try {
       const { data: videoFiles, error } = await supabase
         .from('auction_files')
-        .select('download_url, download_url_backup, mime_type')
+        .select('cdn_url, download_url, download_url_backup, mime_type, publish_status')
         .eq('item_id', item.id)
         .like('mime_type', 'video/%');
 
       if (!error && videoFiles && videoFiles.length > 0) {
         console.log('[VIDEO] Loading videos for gallery:', videoFiles);
         videoFiles.forEach(video => {
+          const videoUrl = (video.cdn_url && video.publish_status === 'published')
+            ? video.cdn_url
+            : video.download_url;
           allMedia.push({
-            url: video.download_url,
+            url: videoUrl,
             isVideo: true
           });
         });

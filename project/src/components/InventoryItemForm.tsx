@@ -85,10 +85,13 @@ export default function InventoryItemForm({ item, eventId = '', consigners, onSu
           if (!error && videoFiles && videoFiles.length > 0) {
             console.log('[VIDEO] Loaded existing videos:', videoFiles);
             videoFiles.forEach((video, index) => {
+              const videoUrl = (video.cdn_url && video.publish_status === 'published')
+                ? video.cdn_url
+                : video.download_url;
               existingImages.push({
                 id: `existing-video-${video.id || index}-${Date.now()}`,
                 type: 'irondrive',
-                url: video.download_url,
+                url: videoUrl,
                 backupUrl: video.download_url_backup || undefined,
                 name: video.name || `Video ${index + 1}`,
                 isVideo: true
