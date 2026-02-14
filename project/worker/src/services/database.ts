@@ -26,6 +26,7 @@ export interface AuctionFile {
   file_key: string;
   file_name: string;
   file_type: string;
+  mime_type: string | null;
   asset_group_id: string;
   cdn_key_prefix: string | null;
   thumb_url: string | null;

@@ -33,16 +33,19 @@ export class JobProcessor {
         fileKey: file.file_key,
         fileName: file.file_name,
         fileType: file.file_type,
+        mimeType: file.mime_type,
       });
 
       const sourceBuffer = await this.raid.downloadFile(file.file_key);
 
-      if (this.imageProcessor.isImage(file.file_type)) {
+      const mimeType = file.mime_type || 'unknown';
+
+      if (this.imageProcessor.isImage(mimeType)) {
         await this.processImage(job, file, sourceBuffer);
-      } else if (this.imageProcessor.isVideo(file.file_type)) {
+      } else if (this.imageProcessor.isVideo(mimeType)) {
         await this.processVideo(job, file, sourceBuffer);
       } else {
-        throw new Error(`Unsupported file type: ${file.file_type}`);
+        throw new Error(`Unsupported MIME type: ${mimeType}`);
       }
 
       logger.info('Job completed successfully', {
@@ -100,12 +103,13 @@ export class JobProcessor {
   }
 
   private async processVideo(job: any, file: any, sourceBuffer: Buffer): Promise<void> {
-    logger.info('Processing video', { fileId: file.id, mimeType: file.file_type });
+    const mimeType = file.mime_type || 'video/mp4';
+    logger.info('Processing video', { fileId: file.id, mimeType });
 
     const videoUrl = await this.storage.uploadVideo(
       file.asset_group_id,
       sourceBuffer,
-      file.file_type
+      mimeType
     );
 
     await this.db.upsertVariant(file.asset_group_id, 'video', videoUrl, {});
