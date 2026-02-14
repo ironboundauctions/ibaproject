@@ -30,7 +30,7 @@ export class StorageService {
         })
       );
 
-      const url = `${config.cdn.baseUrl}/file/IBA-Lot-Media/${key}`;
+      const url = `${config.cdn.baseUrl}/${key}`;
       logger.info('File uploaded successfully', { key, url });
 
       return url;
