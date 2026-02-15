@@ -148,14 +148,20 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
                 className="flex items-center justify-between p-4 border border-ironbound-grey-200 rounded-lg hover:border-ironbound-orange-300 transition-colors"
               >
                 <div className="flex items-center space-x-4">
-                  <img
-                    src={item.image_url}
-                    alt={item.title}
-                    className="w-16 h-16 rounded-lg object-cover"
-                    onError={(e) => {
-                      e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
-                    }}
-                  />
+                  {item.image_url ? (
+                    <img
+                      src={item.image_url}
+                      alt={item.title}
+                      className="w-16 h-16 rounded-lg object-cover"
+                      onError={(e) => {
+                        e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
+                      }}
+                    />
+                  ) : (
+                    <div className="w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center text-xs text-gray-500">
+                      Processing...
+                    </div>
+                  )}
                   <div>
                     <div className="font-medium text-ironbound-grey-900">{item.title}</div>
                     <div className="text-sm text-ironbound-grey-500">
@@ -231,14 +237,20 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
                         onChange={() => toggleItemSelection(item.id)}
                         className="w-5 h-5 text-ironbound-orange-500 rounded focus:ring-ironbound-orange-500"
                       />
-                      <img
-                        src={item.image_url}
-                        alt={item.title}
-                        className="w-12 h-12 rounded-lg object-cover ml-4"
-                        onError={(e) => {
-                          e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
-                        }}
-                      />
+                      {item.image_url ? (
+                        <img
+                          src={item.image_url}
+                          alt={item.title}
+                          className="w-12 h-12 rounded-lg object-cover ml-4"
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
+                          }}
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-lg bg-gray-200 flex items-center justify-center text-xs text-gray-500 ml-4">
+                          Processing...
+                        </div>
+                      )}
                       <div className="ml-4 flex-1">
                         <div className="font-medium text-ironbound-grey-900">{item.title}</div>
                         <div className="text-sm text-ironbound-grey-500">

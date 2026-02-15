@@ -85,17 +85,16 @@ export default function InventoryItemForm({ item, eventId = '', consigners, onSu
           if (!error && videoFiles && videoFiles.length > 0) {
             console.log('[VIDEO] Loaded existing videos:', videoFiles);
             videoFiles.forEach((video, index) => {
-              const videoUrl = (video.cdn_url && video.publish_status === 'published')
-                ? video.cdn_url
-                : video.download_url;
-              existingImages.push({
-                id: `existing-video-${video.id || index}-${Date.now()}`,
-                type: 'irondrive',
-                url: videoUrl,
-                backupUrl: video.download_url_backup || undefined,
-                name: video.name || `Video ${index + 1}`,
-                isVideo: true
-              });
+              // Only show videos with published CDN URLs
+              if (video.cdn_url && video.publish_status === 'published') {
+                existingImages.push({
+                  id: `existing-video-${video.id || index}-${Date.now()}`,
+                  type: 'irondrive',
+                  url: video.cdn_url,
+                  name: video.name || `Video ${index + 1}`,
+                  isVideo: true
+                });
+              }
             });
           } else if (error) {
             console.error('[VIDEO] Error loading existing videos:', error);
@@ -172,6 +171,10 @@ export default function InventoryItemForm({ item, eventId = '', consigners, onSu
 
           console.warn('Some images failed to upload:', uploadResult.errors);
         }
+
+        // Files uploaded to RAID successfully - worker will process and publish to B2
+        console.log('[B2-ONLY MODE] Files uploaded to RAID. Worker will publish to Backblaze B2.');
+        console.log('[B2-ONLY MODE] Images will appear once worker completes processing.');
 
         // Merge uploaded URLs with IronDrive URLs in correct order
         // Build ALL uploaded URLs first (including videos)
@@ -428,7 +431,8 @@ export default function InventoryItemForm({ item, eventId = '', consigners, onSu
                 mime_type: 'image/jpeg',
                 size: 0,
                 uploaded_by: currentUser?.id,
-                source_user_id: null  // NULL = uploaded by auction FE from PC
+                source_user_id: null,
+                asset_group_id: crypto.randomUUID()
               });
             }
           }
@@ -701,6 +705,7 @@ export default function InventoryItemForm({ item, eventId = '', consigners, onSu
               size: f.size ?? null,
               uploaded_by: user.id,
               source_user_id: f.userId ?? null,
+              asset_group_id: crypto.randomUUID()
             });
 
             if (insertError) {

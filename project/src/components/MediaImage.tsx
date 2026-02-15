@@ -3,7 +3,6 @@ import React, { useState } from 'react';
 interface MediaImageProps {
   thumbUrl?: string | null;
   displayUrl?: string | null;
-  raidUrl: string;
   alt: string;
   className?: string;
   variant?: 'thumb' | 'display';
@@ -13,50 +12,47 @@ interface MediaImageProps {
 export function MediaImage({
   thumbUrl,
   displayUrl,
-  raidUrl,
   alt,
   className = '',
   variant = 'thumb',
   publishStatus,
 }: MediaImageProps) {
   const [imageError, setImageError] = useState(false);
-  const [useRaidFallback, setUseRaidFallback] = useState(false);
 
   const cdnUrl = variant === 'thumb' ? thumbUrl : displayUrl;
-  const shouldUseCdn = cdnUrl && publishStatus === 'published' && !imageError && !useRaidFallback;
-  const imageUrl = shouldUseCdn ? cdnUrl : raidUrl;
+  const isPublished = publishStatus === 'published' && cdnUrl && !imageError;
 
   const handleError = () => {
-    if (shouldUseCdn) {
-      setImageError(true);
-      setUseRaidFallback(true);
-    }
+    setImageError(true);
   };
 
   const handleLoad = () => {
     setImageError(false);
   };
 
+  // Show placeholder if not published or no CDN URL
+  if (!isPublished) {
+    return (
+      <div className={`relative ${className} bg-gray-200 flex items-center justify-center`}>
+        <div className="text-gray-500 text-sm text-center p-2">
+          {publishStatus === 'processing' ? 'Processing...' :
+           publishStatus === 'failed' ? 'Processing Failed' :
+           'Image Unavailable'}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative">
       <img
-        src={imageUrl}
+        src={cdnUrl}
         alt={alt}
         className={className}
         onError={handleError}
         onLoad={handleLoad}
         loading="lazy"
       />
-      {publishStatus === 'processing' && (
-        <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-          <div className="text-white text-sm">Processing...</div>
-        </div>
-      )}
-      {publishStatus === 'failed' && (
-        <div className="absolute top-2 right-2 bg-red-500 text-white text-xs px-2 py-1 rounded">
-          Processing Failed
-        </div>
-      )}
     </div>
   );
 }

@@ -18,7 +18,6 @@ import { Auction } from './types/auction';
 import { AuctionService } from './services/auctionService';
 import { AdminService } from './services/adminService';
 import { isAdminUser, AuthService } from './services/authService';
-import { IronDriveService } from './services/ironDriveService';
 
 type View = 'home' | 'auctions' | 'auction-detail' | 'profile' | 'admin' | 'password-reset';
 
@@ -38,32 +37,8 @@ function AppContent() {
   const [sortBy, setSortBy] = useState('ending_soon');
   const [priceRange, setPriceRange] = useState<[number, number]>([0, 10000]);
   const [showFilters, setShowFilters] = useState(false);
-  const [raidBannerVisible, setRaidBannerVisible] = useState(false);
-  const [raidBannerMessage, setRaidBannerMessage] = useState('');
 
   const isAdmin = isAdminUser(user);
-
-  useEffect(() => {
-    const checkRaidHealth = async () => {
-      try {
-        const health = await IronDriveService.checkHealth();
-        if (!health.raidAvailable) {
-          setRaidBannerVisible(true);
-          setRaidBannerMessage(health.message);
-        } else {
-          setRaidBannerVisible(false);
-        }
-      } catch (error) {
-        console.error('RAID health check error:', error);
-        // Don't show banner for health check errors, just log them
-      }
-    };
-
-    checkRaidHealth();
-
-    const interval = setInterval(checkRaidHealth, 60000);
-    return () => clearInterval(interval);
-  }, []);
 
   // Debug logging
   useEffect(() => {
@@ -279,33 +254,6 @@ function AppContent() {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
       />
-
-      {raidBannerVisible && (
-        <div className="bg-yellow-50 border-b border-yellow-200">
-          <div className="max-w-7xl mx-auto px-4 py-3 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between flex-wrap">
-              <div className="flex items-center flex-1">
-                <span className="flex p-2 rounded-lg bg-yellow-100">
-                  <svg className="h-5 w-5 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                </span>
-                <p className="ml-3 text-sm font-medium text-yellow-800">
-                  <span className="inline">RAID Storage: {raidBannerMessage}</span>
-                </p>
-              </div>
-              <div className="mt-2 flex-shrink-0 w-full sm:mt-0 sm:w-auto">
-                <button
-                  onClick={() => setRaidBannerVisible(false)}
-                  className="flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-yellow-800 bg-yellow-100 hover:bg-yellow-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-yellow-500"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showHero && (
         <>

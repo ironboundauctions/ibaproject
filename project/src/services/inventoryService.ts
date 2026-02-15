@@ -1,5 +1,4 @@
 import { supabase } from '../lib/supabase';
-import { IronDriveService } from './ironDriveService';
 
 export interface InventoryItem {
   id: string;
@@ -275,6 +274,38 @@ export class InventoryService {
       ...assignment.inventory_items,
       lot_number: assignment.lot_number,
       sale_order: assignment.sale_order
+    }));
+  }
+
+  static async getItemMedia(itemId: string): Promise<Array<{
+    id: string;
+    url: string;
+    thumbUrl?: string;
+    displayUrl?: string;
+    isVideo: boolean;
+    publishStatus?: string;
+    name?: string;
+  }>> {
+    const { data, error } = await supabase
+      .from('auction_files')
+      .select('id, download_url, thumb_url, display_url, publish_status, mime_type, name, file_type')
+      .eq('item_id', itemId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('[INVENTORY] Error fetching media:', error);
+      return [];
+    }
+
+    return (data || []).map(file => ({
+      id: file.id,
+      url: file.display_url || file.thumb_url || file.download_url || '',
+      thumbUrl: file.thumb_url || undefined,
+      displayUrl: file.display_url || undefined,
+      isVideo: file.file_type === 'video' || file.mime_type?.startsWith('video/') || false,
+      publishStatus: file.publish_status || undefined,
+      name: file.name || undefined
     }));
   }
 }

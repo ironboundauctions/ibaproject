@@ -1,4 +1,5 @@
 import pg from 'pg';
+import crypto from 'crypto';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -184,6 +185,25 @@ export class DatabaseService {
     return result.rows[0].id;
   }
 
+  async setVariantItemAndMetadata(
+    variantId: string,
+    itemId: string,
+    originalName: string,
+    bytes: number,
+    mimeType: string
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE auction_files
+       SET item_id = $1,
+           original_name = $2,
+           bytes = $3,
+           mime_type = $4,
+           updated_at = NOW()
+       WHERE id = $5`,
+      [itemId, originalName, bytes, mimeType, variantId]
+    );
+  }
+
   async markJobFailed(jobId: string, fileId: string, errorMessage: string): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -283,33 +303,38 @@ export class DatabaseService {
     height?: number;
     format: string;
   }): Promise<{ id: string }> {
+    const assetGroupId = crypto.randomUUID();
+    const cdnUrl = `${config.cdn.baseUrl}/${data.b2_key}`;
+
     const result = await this.pool.query<{ id: string }>(
       `INSERT INTO auction_files (
-        lot_id,
-        inventory_item_id,
+        item_id,
+        asset_group_id,
         variant,
         b2_key,
+        cdn_url,
         source_key,
-        status,
-        uploaded_from,
-        file_size,
+        original_name,
+        bytes,
+        mime_type,
         width,
         height,
-        format
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        published_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id`,
       [
-        data.lot_id,
-        data.inventory_item_id,
+        data.inventory_item_id || data.lot_id,
+        assetGroupId,
         data.variant,
         data.b2_key,
+        cdnUrl,
         data.source_key,
-        data.status,
-        data.uploaded_from,
+        `${data.variant}_${Date.now()}.${data.format}`,
         data.file_size,
+        `image/${data.format}`,
         data.width || null,
         data.height || null,
-        data.format
+        'published'
       ]
     );
 

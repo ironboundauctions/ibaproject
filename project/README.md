@@ -2,6 +2,15 @@
 
 A premium online auction platform built with React, TypeScript, and Tailwind CSS.
 
+## 📚 Documentation
+
+All project documentation is organized in the `/docs` folder:
+- **Media Publishing**: `/docs/MEDIA_PUBLISHING_QUICKSTART.md`
+- **System Architecture**: `/docs/MEDIA_PUBLISHING_SYSTEM.md`
+- **Setup Instructions**: `/docs/SETUP_INSTRUCTIONS.md`
+- **Deployment Guide**: `/docs/DEPLOYMENT_GUIDE.md`
+- **Worker Setup**: `/docs/WORKER_DEPLOYMENT_GUIDE.md`
+
 ## Development Best Practices
 
 ### Preventing White Screen Issues

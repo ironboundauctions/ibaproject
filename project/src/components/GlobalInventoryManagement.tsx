@@ -3,7 +3,7 @@ import { Plus, Search, Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, C
 import { InventoryService, InventoryItem } from '../services/inventoryService';
 import { ConsignerService } from '../services/consignerService';
 import { Consigner } from '../types/consigner';
-import InventoryItemForm from './InventoryItemForm';
+import InventoryItemFormNew from './InventoryItemFormNew';
 import ImageGalleryModal from './ImageGalleryModal';
 import BulkActions from './BulkActions';
 import AdvancedFilters, { FilterState } from './AdvancedFilters';
@@ -28,6 +28,7 @@ export default function GlobalInventoryManagement() {
   const [showGallery, setShowGallery] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [videoCountsByItemId, setVideoCountsByItemId] = useState<Record<string, number>>({});
+  const [cdnThumbnailsByItemId, setCdnThumbnailsByItemId] = useState<Record<string, string>>({});
   const [advancedFilters, setAdvancedFilters] = useState<FilterState>({
     categories: [],
     consignerIds: [],
@@ -50,21 +51,33 @@ export default function GlobalInventoryManagement() {
       setItems(itemsData);
       setConsigners(consignersData);
 
-      // Fetch video counts for all items
+      // Fetch media counts and thumbnails for all items
       if (itemsData.length > 0) {
         const itemIds = itemsData.map(item => item.id);
-        const { data: videoCounts, error } = await supabase
-          .from('auction_files')
-          .select('item_id')
-          .in('item_id', itemIds)
-          .like('mime_type', 'video/%');
 
-        if (!error && videoCounts) {
-          const counts: Record<string, number> = {};
-          videoCounts.forEach(record => {
-            counts[record.item_id] = (counts[record.item_id] || 0) + 1;
+        const { data: allFiles, error: filesError } = await supabase
+          .from('auction_files')
+          .select('item_id, cdn_url, mime_type, variant')
+          .in('item_id', itemIds)
+          .eq('published_status', 'published')
+          .is('detached_at', null)
+          .order('created_at', { ascending: true });
+
+        if (!filesError && allFiles) {
+          const videoCounts: Record<string, number> = {};
+          const thumbnails: Record<string, string> = {};
+
+          allFiles.forEach(file => {
+            const isVideo = file.mime_type?.startsWith('video/') || false;
+            if (isVideo) {
+              videoCounts[file.item_id] = (videoCounts[file.item_id] || 0) + 1;
+            } else if (!thumbnails[file.item_id] && file.variant === 'thumb') {
+              thumbnails[file.item_id] = file.cdn_url;
+            }
           });
-          setVideoCountsByItemId(counts);
+
+          setVideoCountsByItemId(videoCounts);
+          setCdnThumbnailsByItemId(thumbnails);
         }
       }
     } catch (error) {
@@ -195,46 +208,33 @@ export default function GlobalInventoryManagement() {
   };
 
   const handleImageClick = async (item: InventoryItem) => {
-    const allMedia: Array<{url: string, isVideo?: boolean}> = [];
-
-    // Add main image
-    if (item.image_url) {
-      allMedia.push({ url: item.image_url, isVideo: false });
-    }
-
-    // Add additional images
-    if (item.additional_images && item.additional_images.length > 0) {
-      item.additional_images.forEach(url => {
-        allMedia.push({ url, isVideo: false });
-      });
-    }
-
-    // Load videos from auction_files table
     try {
-      const { data: videoFiles, error } = await supabase
+      const { data: files, error } = await supabase
         .from('auction_files')
-        .select('cdn_url, download_url, download_url_backup, mime_type, publish_status')
+        .select('cdn_url, mime_type, variant')
         .eq('item_id', item.id)
-        .like('mime_type', 'video/%');
+        .eq('published_status', 'published')
+        .is('detached_at', null)
+        .in('variant', ['display', 'video'])
+        .order('created_at', { ascending: true });
 
-      if (!error && videoFiles && videoFiles.length > 0) {
-        console.log('[VIDEO] Loading videos for gallery:', videoFiles);
-        videoFiles.forEach(video => {
-          const videoUrl = (video.cdn_url && video.publish_status === 'published')
-            ? video.cdn_url
-            : video.download_url;
-          allMedia.push({
-            url: videoUrl,
-            isVideo: true
-          });
-        });
+      if (error) throw error;
+
+      const media = (files || []).map(file => ({
+        url: file.cdn_url,
+        isVideo: file.mime_type?.startsWith('video/') || false
+      }));
+
+      // Fallback to legacy image_url if no files found
+      if (media.length === 0 && item.image_url) {
+        media.push({ url: item.image_url, isVideo: false });
       }
-    } catch (err) {
-      console.error('[VIDEO] Error loading videos for gallery:', err);
-    }
 
-    setGalleryImages(allMedia as any);
-    setShowGallery(true);
+      setGalleryImages(media as any);
+      setShowGallery(true);
+    } catch (err) {
+      console.error('[MEDIA] Error loading media:', err);
+    }
   };
 
   const handleSortChange = (newSortBy: typeof sortBy) => {
@@ -397,12 +397,14 @@ export default function GlobalInventoryManagement() {
             ← Back to Inventory
           </button>
         </div>
-        <InventoryItemForm
+        <InventoryItemFormNew
           item={selectedItem || undefined}
-          eventId=""
           consigners={consigners}
-          onSubmit={handleFormSubmit}
-          onSaveComplete={fetchData}
+          onSubmit={async (data) => {
+            await handleFormSubmit(data);
+            await fetchData();
+            return { success: true };
+          }}
           onCancel={() => {
             setShowForm(false);
             setSelectedItem(null);
@@ -573,14 +575,24 @@ export default function GlobalInventoryManagement() {
                           onClick={() => handleImageClick(item)}
                           className="relative h-12 w-12 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-ironbound-orange-500 transition-all"
                         >
-                          <img
-                            src={item.image_url}
-                            alt={item.title}
-                            className="h-12 w-12 object-cover"
-                            onError={(e) => {
-                              e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
-                            }}
-                          />
+                          {(() => {
+                            const cdnUrl = cdnThumbnailsByItemId[item.id];
+                            const imageUrl = cdnUrl || item.image_url;
+                            return imageUrl ? (
+                              <img
+                                src={imageUrl}
+                                alt={item.title}
+                                className="h-12 w-12 object-cover"
+                                onError={(e) => {
+                                  e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
+                                }}
+                              />
+                            ) : (
+                              <div className="h-12 w-12 bg-gray-200 flex items-center justify-center text-xs text-gray-500">
+                                Processing...
+                              </div>
+                            );
+                          })()}
                           {(() => {
                             const mainImageCount = item.image_url ? 1 : 0;
                             const additionalImagesCount = item.additional_images?.length || 0;

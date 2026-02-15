@@ -12,6 +12,21 @@ export interface FileUploadRecord {
   metadata: Record<string, any>;
 }
 
+export interface UploadedFile {
+  variant: string;
+  b2_key: string;
+  cdn_url: string;
+  id: string;
+  width: number;
+  height: number;
+}
+
+export interface UploadResponse {
+  success: boolean;
+  files: UploadedFile[];
+  error?: string;
+}
+
 export class FileUploadService {
   static async getUploadsByInventoryNumber(inventoryNumber: string): Promise<FileUploadRecord[]> {
     try {
@@ -134,5 +149,82 @@ export class FileUploadService {
         uploadsByType: {}
       };
     }
+  }
+
+  static async uploadPCFileToWorker(
+    file: File,
+    itemId?: string,
+    onProgress?: (progress: number) => void
+  ): Promise<UploadResponse> {
+    try {
+      const workerUrl = import.meta.env.VITE_WORKER_URL;
+
+      if (!workerUrl) {
+        throw new Error('Worker URL not configured');
+      }
+
+      if (!itemId) {
+        throw new Error('itemId is required');
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('item_id', itemId);
+
+      const response = await fetch(`${workerUrl}/api/upload-and-process`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(errorData.error || `Upload failed with status ${response.status}`);
+      }
+
+      const result: UploadResponse = await response.json();
+
+      if (onProgress) {
+        onProgress(100);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Error uploading file to worker:', error);
+      throw error;
+    }
+  }
+
+  static async uploadMultiplePCFilesToWorker(
+    files: File[],
+    itemId?: string,
+    onProgress?: (current: number, total: number) => void
+  ): Promise<UploadResponse[]> {
+    const results: UploadResponse[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+
+      if (onProgress) {
+        onProgress(i, files.length);
+      }
+
+      try {
+        const result = await this.uploadPCFileToWorker(file, itemId);
+        results.push(result);
+      } catch (error) {
+        console.error(`Error uploading file ${file.name}:`, error);
+        results.push({
+          success: false,
+          files: [],
+          error: error instanceof Error ? error.message : 'Upload failed'
+        });
+      }
+    }
+
+    if (onProgress) {
+      onProgress(files.length, files.length);
+    }
+
+    return results;
   }
 }

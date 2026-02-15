@@ -19,20 +19,20 @@ export class UploadHandler {
         return;
       }
 
-      const { lot_id, inventory_item_id } = req.body;
+      const { item_id } = req.body;
 
-      if (!lot_id && !inventory_item_id) {
-        res.status(400).json({ error: 'Either lot_id or inventory_item_id is required' });
+      if (!item_id) {
+        res.status(400).json({ error: 'item_id is required' });
         return;
       }
 
       logger.info('Processing PC upload', {
         filename: req.file.originalname,
         size: req.file.size,
-        lot_id,
-        inventory_item_id
+        item_id
       });
 
+      const assetGroupId = crypto.randomUUID();
       const variants = await this.imageProcessor.processImage(req.file.buffer);
 
       const uploadResults = [];
@@ -43,42 +43,43 @@ export class UploadHandler {
       ];
 
       for (const { name, data } of variantEntries) {
-        const fileKey = `processed/${name}_${crypto.randomUUID()}.webp`;
+        const b2Key = `assets/${assetGroupId}/${name}.webp`;
+        const cdnUrl = this.storage.getCdnUrl(b2Key);
 
-        await this.storage.uploadFile(fileKey, data.buffer, 'image/webp');
+        await this.storage.uploadFile(b2Key, data.buffer, 'image/webp');
 
-        const fileRecord = await this.db.createAuctionFile({
-          lot_id: lot_id || null,
-          inventory_item_id: inventory_item_id || null,
-          variant: name,
-          b2_key: fileKey,
-          source_key: null,
-          status: 'published',
-          uploaded_from: 'pc',
-          file_size: data.buffer.length,
-          width: data.width,
-          height: data.height,
-          format: 'webp'
-        });
+        const variantId = await this.db.upsertVariant(
+          assetGroupId,
+          name,
+          cdnUrl,
+          {
+            b2Key,
+            width: data.width,
+            height: data.height
+          }
+        );
+
+        await this.db.setVariantItemAndMetadata(variantId, item_id, req.file.originalname, data.buffer.length, 'image/webp');
 
         uploadResults.push({
           variant: name,
-          b2_key: fileKey,
-          cdn_url: this.storage.getCdnUrl(fileKey),
-          id: fileRecord.id,
+          b2_key: b2Key,
+          cdn_url: cdnUrl,
+          id: variantId,
           width: data.width,
           height: data.height
         });
       }
 
       logger.info('PC upload completed successfully', {
-        lot_id,
-        inventory_item_id,
+        item_id,
+        asset_group_id: assetGroupId,
         variants: uploadResults.length
       });
 
       res.json({
         success: true,
+        asset_group_id: assetGroupId,
         files: uploadResults
       });
 
