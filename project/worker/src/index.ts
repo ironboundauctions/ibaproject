@@ -1,3 +1,5 @@
+import express from 'express';
+import multer from 'multer';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { DatabaseService } from './services/database.js';
@@ -6,6 +8,7 @@ import { ImageProcessor } from './services/imageProcessor.js';
 import { StorageService } from './services/storage.js';
 import { JobProcessor } from './services/jobProcessor.js';
 import { CleanupProcessor } from './services/cleanupProcessor.js';
+import { UploadHandler } from './services/uploadHandler.js';
 
 class MediaPublishingWorker {
   private isShuttingDown = false;
@@ -13,9 +16,11 @@ class MediaPublishingWorker {
   private storage: StorageService;
   private jobProcessor: JobProcessor;
   private cleanupProcessor: CleanupProcessor;
+  private uploadHandler: UploadHandler;
   private activeJobs = 0;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private lastCleanup: Date = new Date(0);
+  private httpServer: any;
 
   constructor() {
     this.db = new DatabaseService();
@@ -25,6 +30,7 @@ class MediaPublishingWorker {
 
     this.jobProcessor = new JobProcessor(this.db, raid, imageProcessor, this.storage);
     this.cleanupProcessor = new CleanupProcessor(this.db, this.storage);
+    this.uploadHandler = new UploadHandler(this.db, imageProcessor, this.storage);
   }
 
   async start(): Promise<void> {
@@ -35,6 +41,7 @@ class MediaPublishingWorker {
     });
 
     this.setupSignalHandlers();
+    this.startHttpServer();
     this.scheduleCleanup();
 
     while (!this.isShuttingDown) {
@@ -62,6 +69,30 @@ class MediaPublishingWorker {
     }
 
     await this.shutdown();
+  }
+
+  private startHttpServer(): void {
+    const app = express();
+    const upload = multer({ storage: multer.memoryStorage() });
+
+    app.use(express.json());
+
+    app.get('/health', (req, res) => {
+      res.json({
+        status: 'ok',
+        uptime: process.uptime(),
+        activeJobs: this.activeJobs
+      });
+    });
+
+    app.post('/api/upload-and-process', upload.single('file'), async (req, res) => {
+      await this.uploadHandler.handlePCUpload(req, res);
+    });
+
+    const port = process.env.PORT || 3000;
+    this.httpServer = app.listen(port, () => {
+      logger.info(`HTTP server listening on port ${port}`);
+    });
   }
 
   private scheduleCleanup(): void {
@@ -126,6 +157,11 @@ class MediaPublishingWorker {
 
   private async shutdown(): Promise<void> {
     logger.info('Shutting down gracefully...');
+
+    if (this.httpServer) {
+      this.httpServer.close();
+      logger.info('HTTP server closed');
+    }
 
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);

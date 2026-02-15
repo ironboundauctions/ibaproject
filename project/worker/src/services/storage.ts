@@ -44,7 +44,7 @@ export class StorageService {
     assetGroupId: string,
     thumbBuffer: Buffer,
     displayBuffer: Buffer
-  ): Promise<{ thumbUrl: string; displayUrl: string }> {
+  ): Promise<{ thumbUrl: string; thumbB2Key: string; displayUrl: string; displayB2Key: string }> {
     const thumbKey = `assets/${assetGroupId}/thumb.webp`;
     const displayKey = `assets/${assetGroupId}/display.webp`;
 
@@ -53,20 +53,28 @@ export class StorageService {
       this.uploadFile(displayKey, displayBuffer, 'image/webp'),
     ]);
 
-    return { thumbUrl, displayUrl };
+    return {
+      thumbUrl,
+      thumbB2Key: thumbKey,
+      displayUrl,
+      displayB2Key: displayKey,
+    };
   }
 
   async uploadVideo(
     assetGroupId: string,
     videoBuffer: Buffer,
     mimeType: string
-  ): Promise<string> {
+  ): Promise<{ videoUrl: string; videoB2Key: string }> {
     const extension = this.getVideoExtension(mimeType);
     const videoKey = `assets/${assetGroupId}/video${extension}`;
 
     const videoUrl = await this.uploadFile(videoKey, videoBuffer, mimeType);
 
-    return videoUrl;
+    return {
+      videoUrl,
+      videoB2Key: videoKey,
+    };
   }
 
   private getVideoExtension(mimeType: string): string {
@@ -135,5 +143,9 @@ export class StorageService {
 
   generateCdnKeyPrefix(assetGroupId: string): string {
     return `assets/${assetGroupId}`;
+  }
+
+  getCdnUrl(key: string): string {
+    return `${config.cdn.baseUrl}/${key}`;
   }
 }

@@ -23,20 +23,22 @@ export interface PublishJob {
 
 export interface AuctionFile {
   id: string;
-  file_key: string;
-  file_name: string;
-  file_type: string;
-  mime_type: string | null;
+  item_id: string | null;
   asset_group_id: string;
-  cdn_key_prefix: string | null;
-  thumb_url: string | null;
-  display_url: string | null;
-  publish_status: string;
-  variant: string | null;
+  variant: 'source' | 'thumb' | 'display' | 'video';
+  source_key: string | null;
+  b2_key: string | null;
   cdn_url: string | null;
+  original_name: string;
+  bytes: number | null;
+  mime_type: string | null;
   width: number | null;
   height: number | null;
   duration_seconds: number | null;
+  published_status: 'pending' | 'processing' | 'published' | 'failed';
+  detached_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export class DatabaseService {
@@ -119,13 +121,10 @@ export class DatabaseService {
 
       await client.query(
         `UPDATE auction_files
-         SET cdn_key_prefix = $1,
-             thumb_url = $2,
-             display_url = $3,
-             publish_status = 'published',
-             published_at = NOW()
-         WHERE id = $4`,
-        [cdnKeyPrefix, thumbUrl, displayUrl, fileId]
+         SET published_status = 'published',
+             updated_at = NOW()
+         WHERE id = $1 AND variant = 'source'`,
+        [fileId]
       );
 
       await client.query('COMMIT');
@@ -146,6 +145,7 @@ export class DatabaseService {
       width?: number;
       height?: number;
       durationSeconds?: number;
+      b2Key?: string;
     }
   ): Promise<string> {
     const result = await this.pool.query<{ id: string }>(
@@ -153,28 +153,28 @@ export class DatabaseService {
         asset_group_id,
         variant,
         cdn_url,
+        b2_key,
         width,
         height,
         duration_seconds,
-        file_key,
-        download_url,
-        name,
-        publish_status,
-        published_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, '', '', '', 'published', NOW())
+        original_name,
+        published_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, '', 'published')
       ON CONFLICT (asset_group_id, variant)
       DO UPDATE SET
         cdn_url = EXCLUDED.cdn_url,
+        b2_key = EXCLUDED.b2_key,
         width = EXCLUDED.width,
         height = EXCLUDED.height,
         duration_seconds = EXCLUDED.duration_seconds,
-        publish_status = 'published',
-        published_at = NOW()
+        published_status = 'published',
+        updated_at = NOW()
       RETURNING id`,
       [
         assetGroupId,
         variant,
         cdnUrl,
+        metadata.b2Key || null,
         metadata.width || null,
         metadata.height || null,
         metadata.durationSeconds || null,
@@ -214,8 +214,8 @@ export class DatabaseService {
 
       await client.query(
         `UPDATE auction_files
-         SET publish_status = $1
-         WHERE id = $2`,
+         SET published_status = $1
+         WHERE id = $2 AND variant = 'source'`,
         [willRetry ? 'pending' : 'failed', fileId]
       );
 
@@ -238,9 +238,9 @@ export class DatabaseService {
   async getFilesForCleanup(): Promise<AuctionFile[]> {
     const result = await this.pool.query<AuctionFile>(
       `SELECT * FROM auction_files
-       WHERE deleted_at IS NOT NULL
-         AND deleted_at < NOW() - INTERVAL '30 days'
-       ORDER BY deleted_at ASC
+       WHERE detached_at IS NOT NULL
+         AND detached_at < NOW() - INTERVAL '30 days'
+       ORDER BY detached_at ASC
        LIMIT 100`
     );
     return result.rows;
@@ -251,7 +251,7 @@ export class DatabaseService {
       `SELECT COUNT(*) as count
        FROM auction_files
        WHERE asset_group_id = $1
-         AND deleted_at IS NULL`,
+         AND detached_at IS NULL`,
       [assetGroupId]
     );
 
@@ -268,6 +268,52 @@ export class DatabaseService {
     );
 
     logger.info('Deleted files from database', { count: fileIds.length });
+  }
+
+  async createAuctionFile(data: {
+    lot_id: string | null;
+    inventory_item_id: string | null;
+    variant: string;
+    b2_key: string;
+    source_key: string | null;
+    status: string;
+    uploaded_from: string;
+    file_size: number;
+    width?: number;
+    height?: number;
+    format: string;
+  }): Promise<{ id: string }> {
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO auction_files (
+        lot_id,
+        inventory_item_id,
+        variant,
+        b2_key,
+        source_key,
+        status,
+        uploaded_from,
+        file_size,
+        width,
+        height,
+        format
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING id`,
+      [
+        data.lot_id,
+        data.inventory_item_id,
+        data.variant,
+        data.b2_key,
+        data.source_key,
+        data.status,
+        data.uploaded_from,
+        data.file_size,
+        data.width || null,
+        data.height || null,
+        data.format
+      ]
+    );
+
+    return result.rows[0];
   }
 
   async close(): Promise<void> {

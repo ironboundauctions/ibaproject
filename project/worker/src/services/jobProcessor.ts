@@ -30,13 +30,17 @@ export class JobProcessor {
 
       logger.debug('File details', {
         fileId: file.id,
-        fileKey: file.file_key,
-        fileName: file.file_name,
-        fileType: file.file_type,
+        sourceKey: file.source_key,
+        originalName: file.original_name,
+        variant: file.variant,
         mimeType: file.mime_type,
       });
 
-      const sourceBuffer = await this.raid.downloadFile(file.file_key);
+      if (!file.source_key) {
+        throw new Error(`Source file missing source_key: ${file.id}`);
+      }
+
+      const sourceBuffer = await this.raid.downloadFile(file.source_key);
 
       const mimeType = file.mime_type || 'unknown';
 
@@ -65,13 +69,11 @@ export class JobProcessor {
   }
 
   private async processImage(job: any, file: any, sourceBuffer: Buffer): Promise<void> {
-    logger.info('Processing image', { fileId: file.id });
+    logger.info('Processing image', { fileId: file.id, assetGroupId: file.asset_group_id });
 
     const variants = await this.imageProcessor.processImage(sourceBuffer);
 
-    const cdnKeyPrefix = this.storage.generateCdnKeyPrefix(file.asset_group_id);
-
-    const { thumbUrl, displayUrl } = await this.storage.uploadVariants(
+    const { thumbUrl, thumbB2Key, displayUrl, displayB2Key } = await this.storage.uploadVariants(
       file.asset_group_id,
       variants.thumb.buffer,
       variants.display.buffer
@@ -80,23 +82,26 @@ export class JobProcessor {
     await this.db.upsertVariant(file.asset_group_id, 'thumb', thumbUrl, {
       width: variants.thumb.width,
       height: variants.thumb.height,
+      b2Key: thumbB2Key,
     });
 
     await this.db.upsertVariant(file.asset_group_id, 'display', displayUrl, {
       width: variants.display.width,
       height: variants.display.height,
+      b2Key: displayB2Key,
     });
 
     await this.db.markJobCompleted(
       job.id,
       job.file_id,
-      cdnKeyPrefix,
+      '',
       thumbUrl,
       displayUrl
     );
 
     logger.info('Image processed successfully', {
       fileId: file.id,
+      assetGroupId: file.asset_group_id,
       thumbUrl,
       displayUrl,
     });
@@ -104,28 +109,29 @@ export class JobProcessor {
 
   private async processVideo(job: any, file: any, sourceBuffer: Buffer): Promise<void> {
     const mimeType = file.mime_type || 'video/mp4';
-    logger.info('Processing video', { fileId: file.id, mimeType });
+    logger.info('Processing video', { fileId: file.id, assetGroupId: file.asset_group_id, mimeType });
 
-    const videoUrl = await this.storage.uploadVideo(
+    const { videoUrl, videoB2Key } = await this.storage.uploadVideo(
       file.asset_group_id,
       sourceBuffer,
       mimeType
     );
 
-    await this.db.upsertVariant(file.asset_group_id, 'video', videoUrl, {});
-
-    const cdnKeyPrefix = this.storage.generateCdnKeyPrefix(file.asset_group_id);
+    await this.db.upsertVariant(file.asset_group_id, 'video', videoUrl, {
+      b2Key: videoB2Key,
+    });
 
     await this.db.markJobCompleted(
       job.id,
       job.file_id,
-      cdnKeyPrefix,
+      '',
       '',
       videoUrl
     );
 
     logger.info('Video processed successfully', {
       fileId: file.id,
+      assetGroupId: file.asset_group_id,
       videoUrl,
     });
   }
