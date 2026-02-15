@@ -54,15 +54,19 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       if (event.data.type === 'irondrive-selection' && event.data.files) {
         const ironDriveFiles: SelectedFile[] = event.data.files.map((file: any) => {
           const previewUrl = `https://raid.ibaproject.bid/pub/download/${file.source_key}`;
+          const fileName = file.filename || file.name || file.source_key?.split('/').pop() || 'unknown';
           return {
             id: `irondrive-${Date.now()}-${Math.random()}`,
             type: 'irondrive' as const,
             url: previewUrl,
-            name: file.filename,
+            name: fileName,
             isVideo: file.mime_type?.startsWith('video/') || false,
             sourceKey: file.source_key
           };
         });
+
+        console.log('[IRONDRIVE] Received files from picker:', event.data.files);
+        console.log('[IRONDRIVE] Mapped to SelectedFiles:', ironDriveFiles);
 
         setSelectedFiles(prev => [...prev, ...ironDriveFiles]);
       }
@@ -190,7 +194,6 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
         const uploadResults = await FileUploadService.uploadMultiplePCFilesToWorker(
           pcFiles.map(f => f.file!),
-          undefined,
           savedItemId,
           (current, total) => setUploadProgress({ current, total })
         );
@@ -206,11 +209,12 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
       if (ironDriveFiles.length > 0) {
         console.log(`[FORM] Linking ${ironDriveFiles.length} IronDrive files...`);
+        console.log('[FORM] IronDrive files to link:', ironDriveFiles);
 
         for (const file of ironDriveFiles) {
-          const assetGroupId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const assetGroupId = crypto.randomUUID();
 
-          const { error: insertError } = await supabase.from('auction_files').insert({
+          const insertData = {
             item_id: savedItemId,
             asset_group_id: assetGroupId,
             variant: 'source',
@@ -218,10 +222,15 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             original_name: file.name,
             mime_type: file.isVideo ? 'video/mp4' : 'image/jpeg',
             published_status: 'pending'
-          });
+          };
+
+          console.log('[FORM] Inserting IronDrive file:', insertData);
+
+          const { error: insertError } = await supabase.from('auction_files').insert(insertData);
 
           if (insertError) {
             console.error('[FORM] Error linking IronDrive file:', insertError);
+            console.error('[FORM] Failed insert data:', insertData);
             throw new Error('Failed to link IronDrive file');
           }
         }
