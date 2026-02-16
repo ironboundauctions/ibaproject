@@ -174,13 +174,7 @@ export default function GlobalInventoryManagement() {
         setItems(prev => [newItem, ...prev]);
         itemId = newItem.id;
       }
-      setShowForm(false);
-      setSelectedItem(null);
 
-      // Refresh data to update video counts and ensure consistency
-      await fetchData();
-
-      // Return the item ID so the form can save file metadata
       return { id: itemId };
     } catch (error) {
       throw error;
@@ -400,14 +394,11 @@ export default function GlobalInventoryManagement() {
         <InventoryItemFormNew
           item={selectedItem || undefined}
           consigners={consigners}
-          onSubmit={async (data) => {
-            await handleFormSubmit(data);
-            await fetchData();
-            return { success: true };
-          }}
-          onCancel={() => {
+          onSubmit={handleFormSubmit}
+          onCancel={async () => {
             setShowForm(false);
             setSelectedItem(null);
+            await fetchData();
           }}
         />
       </div>

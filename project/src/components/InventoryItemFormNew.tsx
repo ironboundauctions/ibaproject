@@ -22,9 +22,31 @@ interface SelectedFile {
   isVideo: boolean;
   type: 'pc' | 'irondrive';
   sourceKey?: string;
+  mimeType?: string;
+  uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
+  assetGroupId?: string;
+  errorMessage?: string;
+}
+
+function guessMimeType(filename: string): string {
+  const ext = filename.toLowerCase().split('.').pop() || '';
+  const mimeTypes: Record<string, string> = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    avi: 'video/x-msvideo',
+    webm: 'video/webm'
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
 }
 
 export default function InventoryItemFormNew({ item, consigners, onSubmit, onCancel }: Props) {
+  const [itemId] = useState(() => item?.id || crypto.randomUUID());
+
   const [formData, setFormData] = useState({
     inventory_number: item?.inventory_number || '',
     title: item?.title || '',
@@ -40,41 +62,37 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [submitProgress, setSubmitProgress] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [error, setError] = useState('');
+  const [processingIronDriveFiles, setProcessingIronDriveFiles] = useState(false);
 
   useEffect(() => {
     if (item) {
       loadExistingFiles();
     }
 
-    const handleMessage = (event: MessageEvent) => {
+    const handleMessage = async (event: MessageEvent) => {
       if (event.origin !== 'https://irondrive.ibaproject.bid') return;
 
       if (event.data.type === 'irondrive-selection' && event.data.files) {
-        const ironDriveFiles: SelectedFile[] = event.data.files.map((file: any) => {
-          const previewUrl = `https://raid.ibaproject.bid/pub/download/${file.source_key}`;
-          const fileName = file.filename || file.name || file.source_key?.split('/').pop() || 'unknown';
-          return {
-            id: `irondrive-${Date.now()}-${Math.random()}`,
-            type: 'irondrive' as const,
-            url: previewUrl,
-            name: fileName,
-            isVideo: file.mime_type?.startsWith('video/') || false,
-            sourceKey: file.source_key
-          };
-        });
-
-        console.log('[IRONDRIVE] Received files from picker:', event.data.files);
-        console.log('[IRONDRIVE] Mapped to SelectedFiles:', ironDriveFiles);
-
-        setSelectedFiles(prev => [...prev, ...ironDriveFiles]);
+        handleIronDriveSelection(event.data.files);
       }
     };
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [item]);
+
+  useEffect(() => {
+    return () => {
+      selectedFiles.forEach(file => {
+        if (file?.url && file.file) {
+          URL.revokeObjectURL(file.url);
+        }
+      });
+    };
+  }, [selectedFiles]);
 
   const handleIronDrivePickerClick = () => {
     const returnUrl = encodeURIComponent(window.location.origin);
@@ -93,7 +111,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         .from('auction_files')
         .select('*')
         .eq('item_id', item.id)
-        .in('variant', ['display', 'thumb'])
+        .in('variant', ['display', 'thumb', 'source'])
         .is('detached_at', null)
         .order('created_at', { ascending: true });
 
@@ -109,14 +127,34 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         }, {} as Record<string, any[]>);
 
         const existing = Object.values(groupedByAsset).map(group => {
-          const displayFile = group.find(f => f.variant === 'display') || group[0];
+          const displayFile = group.find(f => f.variant === 'display');
+          const thumbFile = group.find(f => f.variant === 'thumb');
+          const sourceFile = group.find(f => f.variant === 'source');
+          const primaryFile = displayFile || thumbFile || sourceFile || group[0];
+
+          const previewUrl = displayFile?.cdn_url || thumbFile?.cdn_url;
+
+          console.log('[LOAD] Building file object:', {
+            assetGroupId: primaryFile.asset_group_id,
+            displayCdnUrl: displayFile?.cdn_url,
+            thumbCdnUrl: thumbFile?.cdn_url,
+            sourceKey: sourceFile?.source_key,
+            previewUrl,
+            publishedStatus: primaryFile.published_status
+          });
+
           return {
-            id: displayFile.asset_group_id,
-            type: (displayFile.source_key ? 'irondrive' : 'pc') as 'pc' | 'irondrive',
-            url: displayFile.cdn_url,
-            name: displayFile.original_name || 'file',
-            isVideo: displayFile.mime_type?.startsWith('video/') || false,
-            sourceKey: displayFile.source_key
+            id: primaryFile.asset_group_id,
+            type: (sourceFile?.source_key ? 'irondrive' : 'pc') as 'pc' | 'irondrive',
+            url: previewUrl,
+            name: sourceFile?.original_name || primaryFile.original_name || 'file',
+            isVideo: primaryFile.mime_type?.startsWith('video/') || false,
+            sourceKey: sourceFile?.source_key,
+            mimeType: primaryFile.mime_type,
+            uploadStatus: (primaryFile.published_status === 'published' ? 'published' :
+                         primaryFile.published_status === 'processing' ? 'processing' :
+                         primaryFile.published_status === 'pending' ? 'processing' : 'uploaded') as any,
+            assetGroupId: primaryFile.asset_group_id
           };
         });
         setSelectedFiles(existing);
@@ -126,7 +164,123 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleIronDriveSelection = async (pickerFiles: any[]) => {
+    console.log('[IRONDRIVE] Processing files immediately:', pickerFiles);
+    setProcessingIronDriveFiles(true);
+    setError('');
+
+    try {
+      const fileRecords: SelectedFile[] = [];
+      const assetGroupIds: string[] = [];
+
+      for (const file of pickerFiles) {
+        const fileName = file.filename || file.name || file.source_key?.split('/').pop() || 'unknown';
+        const assetGroupId = crypto.randomUUID();
+        assetGroupIds.push(assetGroupId);
+
+        const mimeType = file.mime_type || file.mimeType || guessMimeType(fileName);
+
+        console.log('[IRONDRIVE] Creating auction_files record:', {
+          item_id: itemId,
+          asset_group_id: assetGroupId,
+          source_key: file.source_key,
+          mime_type: mimeType,
+          file_obj: file
+        });
+
+        const { error: dbError } = await supabase.from('auction_files').insert({
+          item_id: itemId,
+          asset_group_id: assetGroupId,
+          variant: 'source',
+          source_key: file.source_key,
+          original_name: fileName,
+          mime_type: mimeType,
+          published_status: 'pending'
+        });
+
+        if (dbError) {
+          console.error('[IRONDRIVE] Error creating record:', dbError);
+          throw dbError;
+        }
+
+        fileRecords.push({
+          id: assetGroupId,
+          type: 'irondrive' as const,
+          url: '',
+          name: fileName,
+          isVideo: mimeType.startsWith('video/'),
+          sourceKey: file.source_key,
+          mimeType: mimeType,
+          uploadStatus: 'processing' as const,
+          assetGroupId
+        });
+      }
+
+      setSelectedFiles(prev => [...prev, ...fileRecords]);
+
+      pollForCdnUrls(assetGroupIds);
+    } catch (err) {
+      console.error('[IRONDRIVE] Error processing files:', err);
+      setError('Failed to process IronDrive files. Please try again.');
+      setProcessingIronDriveFiles(false);
+    }
+  };
+
+  const pollForCdnUrls = async (assetGroupIds: string[]) => {
+    const maxAttempts = 60;
+    let attempts = 0;
+    const pendingIds = new Set(assetGroupIds);
+
+    const poll = async () => {
+      attempts++;
+      console.log(`[POLL] Attempt ${attempts}/${maxAttempts}, checking ${pendingIds.size} files`);
+
+      try {
+        const { data: files, error } = await supabase
+          .from('auction_files')
+          .select('asset_group_id, cdn_url, published_status, variant')
+          .in('asset_group_id', Array.from(pendingIds))
+          .eq('variant', 'display');
+
+        if (error) throw error;
+
+        for (const file of files || []) {
+          if (file.cdn_url && file.published_status === 'published') {
+            console.log('[POLL] File ready:', file.asset_group_id);
+            pendingIds.delete(file.asset_group_id);
+
+            setSelectedFiles(prev => prev.map(f =>
+              f.assetGroupId === file.asset_group_id
+                ? { ...f, url: file.cdn_url, uploadStatus: 'published' as const }
+                : f
+            ));
+          }
+        }
+
+        if (pendingIds.size === 0) {
+          console.log('[POLL] All files processed!');
+          setProcessingIronDriveFiles(false);
+          return;
+        }
+
+        if (attempts >= maxAttempts) {
+          console.warn('[POLL] Max attempts reached');
+          setProcessingIronDriveFiles(false);
+          setError('Some files are taking longer than expected to process');
+          return;
+        }
+
+        setTimeout(poll, 2000);
+      } catch (err) {
+        console.error('[POLL] Error:', err);
+        setTimeout(poll, 2000);
+      }
+    };
+
+    poll();
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
 
     const files = Array.from(e.target.files);
@@ -140,31 +294,78 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       file,
       url: URL.createObjectURL(file),
       name: file.name,
-      isVideo: file.type.startsWith('video/')
+      isVideo: file.type.startsWith('video/'),
+      uploadStatus: 'pending'
     }));
 
     setSelectedFiles(prev => [...prev, ...newFiles]);
+
+    e.target.value = '';
   };
 
-  const removeFile = (id: string) => {
+  const removeFile = async (id: string) => {
     setSelectedFiles(prev => {
-      const fileToRemove = prev.find(f => f.id === id);
-      if (fileToRemove?.url && fileToRemove.file) {
-        URL.revokeObjectURL(fileToRemove.url);
+      const file = prev.find(f => f.id === id);
+      if (file?.url && file.file) {
+        URL.revokeObjectURL(file.url);
       }
       return prev.filter(f => f.id !== id);
     });
+  };
+
+  const uploadPCFiles = async (filesToUpload: SelectedFile[], itemId: string) => {
+    setUploadProgress({ current: 0, total: filesToUpload.length });
+
+    for (let i = 0; i < filesToUpload.length; i++) {
+      const file = filesToUpload[i];
+
+      setSelectedFiles(prev => prev.map(f =>
+        f.id === file.id ? { ...f, uploadStatus: 'uploading' as const } : f
+      ));
+
+      try {
+        const result = await FileUploadService.uploadPCFileToWorker(file.file!, itemId);
+
+        if (result.success && result.files.length > 0) {
+          const displayFile = result.files.find(f => f.variant === 'display') || result.files[0];
+
+          setSelectedFiles(prev => prev.map(f =>
+            f.id === file.id ? {
+              ...f,
+              uploadStatus: 'published' as const,
+              url: displayFile.cdn_url,
+              assetGroupId: displayFile.id
+            } : f
+          ));
+        } else {
+          throw new Error(result.error || 'Upload failed');
+        }
+      } catch (error) {
+        console.error(`[PC-UPLOAD] Error uploading ${file.name}:`, error);
+        setSelectedFiles(prev => prev.map(f =>
+          f.id === file.id ? {
+            ...f,
+            uploadStatus: 'error' as const,
+            errorMessage: error instanceof Error ? error.message : 'Upload failed'
+          } : f
+        ));
+      }
+
+      setUploadProgress({ current: i + 1, total: filesToUpload.length });
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError('');
+    setSubmitProgress('Creating item...');
 
     try {
       const consigner = consigners.find(c => c.customer_number === formData.consigner_customer_number);
 
       const submitData: CreateInventoryItemData = {
+        id: itemId,
         inventory_number: formData.inventory_number,
         title: formData.title,
         description: formData.description,
@@ -180,96 +381,53 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       };
 
       const result = await onSubmit(submitData);
-      const savedItemId = item?.id || result?.id;
+      const savedItemId = itemId;
 
-      if (!savedItemId) {
-        throw new Error('Failed to get item ID');
+      setSubmitProgress('Item created successfully!');
+
+      const pendingPCFiles = selectedFiles.filter(f => f.type === 'pc' && f.uploadStatus === 'pending');
+
+      if (pendingPCFiles.length > 0) {
+        setSubmitProgress(`Uploading ${pendingPCFiles.length} file${pendingPCFiles.length > 1 ? 's' : ''}...`);
+        await uploadPCFiles(pendingPCFiles, savedItemId);
+        setSubmitProgress('Files uploaded successfully!');
       }
 
-      const pcFiles = selectedFiles.filter(f => f.file);
-      const ironDriveFiles = selectedFiles.filter(f => f.type === 'irondrive' && f.sourceKey && f.id.startsWith('irondrive-'));
-
-      if (pcFiles.length > 0) {
-        console.log(`[FORM] Uploading ${pcFiles.length} PC files to worker...`);
-
-        const uploadResults = await FileUploadService.uploadMultiplePCFilesToWorker(
-          pcFiles.map(f => f.file!),
-          savedItemId,
-          (current, total) => setUploadProgress({ current, total })
-        );
-
-        const failedUploads = uploadResults.filter(r => !r.success);
-        if (failedUploads.length > 0) {
-          console.error('[FORM] Some uploads failed:', failedUploads);
-          throw new Error(`${failedUploads.length} file(s) failed to upload`);
-        }
-
-        console.log('[FORM] All PC files uploaded and processed successfully');
-      }
-
-      if (ironDriveFiles.length > 0) {
-        console.log(`[FORM] Linking ${ironDriveFiles.length} IronDrive files...`);
-        console.log('[FORM] IronDrive files to link:', ironDriveFiles);
-
-        for (const file of ironDriveFiles) {
-          const assetGroupId = crypto.randomUUID();
-
-          const insertData = {
-            item_id: savedItemId,
-            asset_group_id: assetGroupId,
-            variant: 'source',
-            source_key: file.sourceKey,
-            original_name: file.name,
-            mime_type: file.isVideo ? 'video/mp4' : 'image/jpeg',
-            published_status: 'pending'
-          };
-
-          console.log('[FORM] Inserting IronDrive file:', insertData);
-
-          const { error: insertError } = await supabase.from('auction_files').insert(insertData);
-
-          if (insertError) {
-            console.error('[FORM] Error linking IronDrive file:', insertError);
-            console.error('[FORM] Failed insert data:', insertData);
-            throw new Error('Failed to link IronDrive file');
-          }
-        }
-
-        console.log('[FORM] IronDrive files linked successfully - worker will process them');
-      }
-
-      // Handle file deletions for existing items
       if (item?.id) {
         const { data: existingFiles } = await supabase
           .from('auction_files')
-          .select('id')
+          .select('asset_group_id')
           .eq('item_id', item.id);
 
         if (existingFiles) {
-          const existingFileIds = selectedFiles
-            .filter(f => !f.file && f.id)
-            .map(f => f.id);
+          const currentAssetGroupIds = selectedFiles
+            .filter(f => f.assetGroupId)
+            .map(f => f.assetGroupId);
 
-          const filesToDelete = existingFiles.filter(f => !existingFileIds.includes(f.id));
+          const assetGroupsToDelete = existingFiles
+            .map(f => f.asset_group_id)
+            .filter(id => !currentAssetGroupIds.includes(id));
 
-          if (filesToDelete.length > 0) {
+          if (assetGroupsToDelete.length > 0) {
             await supabase
               .from('auction_files')
               .update({ detached_at: new Date().toISOString() })
-              .in('id', filesToDelete.map(f => f.id));
+              .in('asset_group_id', assetGroupsToDelete);
 
             console.log('[FORM] Marked files as detached for cleanup');
           }
         }
       }
 
+      await new Promise(resolve => setTimeout(resolve, 500));
       onCancel();
     } catch (error) {
       console.error('[FORM] Submit error:', error);
       setError(error instanceof Error ? error.message : 'Failed to save item');
+      setSubmitProgress('');
     } finally {
       setIsSubmitting(false);
-      setUploadProgress({ current: 0, total: 0 });
+      setUploadProgress(null);
     }
   };
 
@@ -297,10 +455,9 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
         <div>
           <label className="block text-sm font-medium text-white mb-1">
-            Category *
+            Category
           </label>
           <select
-            required
             value={formData.category}
             onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value }))}
             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
@@ -315,11 +472,10 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
       <div>
         <label className="block text-sm font-medium text-white mb-1">
-          Title *
+          Title
         </label>
         <input
           type="text"
-          required
           value={formData.title}
           onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
           className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
@@ -427,55 +583,92 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           </button>
         </div>
 
+        {processingIronDriveFiles && (
+          <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center gap-2 text-blue-800">
+              <Loader className="w-4 h-4 animate-spin" />
+              <span className="text-sm font-medium">Processing IronDrive files...</span>
+            </div>
+            <p className="text-xs text-blue-600 mt-1">
+              Files are being optimized and prepared. The save button will enable once processing is complete.
+            </p>
+          </div>
+        )}
+
         {selectedFiles.length > 0 && (
-          <div className="mt-4 grid grid-cols-4 gap-4">
-            {selectedFiles.map(file => (
-              <div key={file.id} className="relative group">
-                {file.url ? (
-                  file.isVideo ? (
-                    <video src={file.url} className="w-full h-24 object-cover rounded" />
-                  ) : (
-                    <img src={file.url} alt={file.name} className="w-full h-24 object-cover rounded" />
-                  )
-                ) : (
-                  <div className="w-full h-24 bg-gray-100 rounded flex items-center justify-center">
-                    <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
-                  </div>
-                )}
-                {file.type === 'irondrive' && (
-                  <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs px-2 py-0.5 rounded">
-                    IronDrive
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeFile(file.id)}
-                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
+          <div className="mt-4">
+            <div className="grid grid-cols-4 gap-4">
+              {selectedFiles.map(file => {
+                if (!file.url) {
+                  console.log('[PREVIEW] File missing URL:', { id: file.id, name: file.name, type: file.type, sourceKey: file.sourceKey });
+                }
+                return (
+                  <div key={file.id} className="relative group">
+                    {file.url ? (
+                      file.isVideo ? (
+                        <video src={file.url} className="w-full h-24 object-cover rounded" />
+                      ) : (
+                        <img
+                          src={file.url}
+                          alt={file.name}
+                          className="w-full h-24 object-cover rounded"
+                        />
+                      )
+                    ) : (
+                      <div className="w-full h-24 bg-gray-200 rounded flex flex-col items-center justify-center">
+                        {file.uploadStatus === 'processing' ? (
+                          <>
+                            <Loader className="w-6 h-6 text-gray-500 animate-spin mb-1" />
+                            <span className="text-xs text-gray-600">Processing...</span>
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
+                        )}
+                      </div>
+                    )}
+
+                  {file.uploadStatus === 'pending' && (
+                    <div className="absolute top-1 left-1 bg-yellow-500 text-white text-xs px-2 py-0.5 rounded">
+                      Ready
+                    </div>
+                  )}
+                  {file.uploadStatus === 'uploading' && (
+                    <div className="absolute inset-0 bg-black bg-opacity-50 rounded flex items-center justify-center">
+                      <Loader className="w-6 h-6 text-white animate-spin" />
+                    </div>
+                  )}
+                  {file.uploadStatus === 'processing' && (
+                    <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs px-2 py-0.5 rounded">
+                      Processing...
+                    </div>
+                  )}
+                  {file.uploadStatus === 'published' && (
+                    <div className="absolute top-1 left-1 bg-green-500 text-white text-xs px-2 py-0.5 rounded">
+                      ✓ Ready
+                    </div>
+                  )}
+                  {file.uploadStatus === 'error' && (
+                    <div className="absolute inset-0 bg-red-500 bg-opacity-75 rounded flex items-center justify-center">
+                      <span className="text-white text-xs px-2 text-center">
+                        {file.errorMessage || 'Error'}
+                      </span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => removeFile(file.id)}
+                    className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
-
-      {uploadProgress.total > 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-blue-700">
-              Uploading {uploadProgress.current} of {uploadProgress.total} files...
-            </span>
-            <Loader className="w-4 h-4 animate-spin text-blue-700" />
-          </div>
-          <div className="w-full bg-blue-200 rounded-full h-2">
-            <div
-              className="bg-blue-600 h-2 rounded-full transition-all"
-              style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
-            />
-          </div>
-        </div>
-      )}
 
       <div className="flex gap-3 pt-4 border-t">
         <button
@@ -488,14 +681,39 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </button>
         <button
           type="submit"
-          disabled={isSubmitting}
-          className="flex-1 bg-ironbound-orange-500 text-white px-4 py-2 rounded-lg hover:bg-ironbound-orange-600 disabled:opacity-50 flex items-center justify-center gap-2"
+          disabled={isSubmitting || processingIronDriveFiles || selectedFiles.some(f => f.uploadStatus === 'uploading' || f.uploadStatus === 'processing')}
+          className="flex-1 bg-ironbound-orange-500 text-white px-4 py-2 rounded-lg hover:bg-ironbound-orange-600 disabled:opacity-50 flex flex-col items-center justify-center gap-1"
         >
           {isSubmitting ? (
             <>
-              <Loader className="w-4 h-4 animate-spin" />
-              Saving...
+              <div className="flex items-center gap-2">
+                <Loader className="w-4 h-4 animate-spin" />
+                <span>{submitProgress}</span>
+              </div>
+              {uploadProgress && (
+                <div className="w-full max-w-xs">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs">
+                      {uploadProgress.current} of {uploadProgress.total}
+                    </span>
+                    <span className="text-xs">
+                      {Math.round((uploadProgress.current / uploadProgress.total) * 100)}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-ironbound-orange-700 rounded-full h-1.5">
+                    <div
+                      className="bg-white h-1.5 rounded-full transition-all"
+                      style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </>
+          ) : processingIronDriveFiles || selectedFiles.some(f => f.uploadStatus === 'uploading' || f.uploadStatus === 'processing') ? (
+            <div className="flex items-center gap-2">
+              <Loader className="w-4 h-4 animate-spin" />
+              <span>Processing images...</span>
+            </div>
           ) : (
             item ? 'Update Item' : 'Create Item'
           )}

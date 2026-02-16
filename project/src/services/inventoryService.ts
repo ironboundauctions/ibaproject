@@ -25,6 +25,7 @@ export interface InventoryItem {
 }
 
 export interface CreateInventoryItemData {
+  id?: string;
   inventory_number: string;
   title: string;
   description?: string;
