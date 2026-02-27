@@ -137,8 +137,9 @@ export class InventoryService {
     // Get all files associated with this item BEFORE deleting anything
     const { data: files, error: filesError } = await supabase
       .from('auction_files')
-      .select('file_key, source_user_id')
-      .eq('item_id', id);
+      .select('source_key, asset_group_id')
+      .eq('item_id', id)
+      .eq('variant', 'source');
 
     if (filesError) {
       console.error('[INVENTORY] Error fetching files for cleanup:', filesError);
@@ -153,28 +154,27 @@ export class InventoryService {
     if (files && files.length > 0) {
       for (const file of files) {
         try {
-          console.log(`[INVENTORY] Checking file: ${file.file_key}`);
-          console.log(`[INVENTORY]   source_user_id: ${file.source_user_id || 'null (PC upload)'}`);
+          console.log(`[INVENTORY] Checking file: ${file.source_key}`);
 
-          // Files from IronDrive picker (source_user_id is set) are NEVER deleted from RAID
-          if (file.source_user_id !== null) {
-            console.log(`[INVENTORY]   Decision: SKIP (IronDrive picker file, never delete from RAID)`);
+          // Files from IronDrive picker (source_key is set) are NEVER deleted from RAID
+          if (file.source_key) {
+            console.log(`[INVENTORY]   Decision: SKIP (IronDrive file, never delete from RAID)`);
             continue;
           }
 
           // Check if any other items still reference this file (before deletion)
-          const refCount = await IronDriveService.getReferenceCount(file.file_key);
+          const refCount = await IronDriveService.getReferenceCount(file.source_key);
           console.log(`[INVENTORY]   Reference count: ${refCount} (including this item)`);
 
           if (refCount === 1) {
             // Only this item references the file - safe to delete from RAID after DB deletion
             console.log(`[INVENTORY]   Decision: DELETE from RAID (last reference)`);
-            filesToDelete.push(file.file_key);
+            filesToDelete.push(file.source_key);
           } else {
             console.log(`[INVENTORY]   Decision: KEEP (${refCount - 1} other item(s) still use this file)`);
           }
         } catch (error) {
-          console.error(`[INVENTORY] Error checking file ${file.file_key}:`, error);
+          console.error(`[INVENTORY] Error checking file ${file.source_key}:`, error);
         }
       }
     }

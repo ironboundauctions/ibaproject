@@ -165,43 +165,24 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
   };
 
   const handleIronDriveSelection = async (pickerFiles: any[]) => {
-    console.log('[IRONDRIVE] Processing files immediately:', pickerFiles);
+    console.log('[IRONDRIVE] Staging files for later submission:', pickerFiles);
     setProcessingIronDriveFiles(true);
     setError('');
 
     try {
       const fileRecords: SelectedFile[] = [];
-      const assetGroupIds: string[] = [];
 
       for (const file of pickerFiles) {
         const fileName = file.filename || file.name || file.source_key?.split('/').pop() || 'unknown';
         const assetGroupId = crypto.randomUUID();
-        assetGroupIds.push(assetGroupId);
-
         const mimeType = file.mime_type || file.mimeType || guessMimeType(fileName);
 
-        console.log('[IRONDRIVE] Creating auction_files record:', {
-          item_id: itemId,
+        console.log('[IRONDRIVE] Staging file:', {
           asset_group_id: assetGroupId,
           source_key: file.source_key,
           mime_type: mimeType,
-          file_obj: file
+          file_name: fileName
         });
-
-        const { error: dbError } = await supabase.from('auction_files').insert({
-          item_id: itemId,
-          asset_group_id: assetGroupId,
-          variant: 'source',
-          source_key: file.source_key,
-          original_name: fileName,
-          mime_type: mimeType,
-          published_status: 'pending'
-        });
-
-        if (dbError) {
-          console.error('[IRONDRIVE] Error creating record:', dbError);
-          throw dbError;
-        }
 
         fileRecords.push({
           id: assetGroupId,
@@ -211,27 +192,27 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           isVideo: mimeType.startsWith('video/'),
           sourceKey: file.source_key,
           mimeType: mimeType,
-          uploadStatus: 'processing' as const,
+          uploadStatus: 'pending' as const,
           assetGroupId
         });
       }
 
       setSelectedFiles(prev => [...prev, ...fileRecords]);
-
-      pollForCdnUrls(assetGroupIds);
+      console.log('[IRONDRIVE] Files staged, will be saved on form submission');
     } catch (err) {
-      console.error('[IRONDRIVE] Error processing files:', err);
-      setError('Failed to process IronDrive files. Please try again.');
+      console.error('[IRONDRIVE] Error staging files:', err);
+      setError('Failed to stage IronDrive files. Please try again.');
+    } finally {
       setProcessingIronDriveFiles(false);
     }
   };
 
-  const pollForCdnUrls = async (assetGroupIds: string[]) => {
+  const waitForCdnUrls = async (assetGroupIds: string[]): Promise<void> => {
     const maxAttempts = 60;
     let attempts = 0;
     const pendingIds = new Set(assetGroupIds);
 
-    const poll = async () => {
+    while (pendingIds.size > 0 && attempts < maxAttempts) {
       attempts++;
       console.log(`[POLL] Attempt ${attempts}/${maxAttempts}, checking ${pendingIds.size} files`);
 
@@ -244,9 +225,18 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
         if (error) throw error;
 
+        console.log('[POLL] Query result:', {
+          filesFound: files?.length || 0,
+          files: files?.map(f => ({
+            asset_group_id: f.asset_group_id,
+            has_cdn_url: !!f.cdn_url,
+            published_status: f.published_status
+          }))
+        });
+
         for (const file of files || []) {
           if (file.cdn_url && file.published_status === 'published') {
-            console.log('[POLL] File ready:', file.asset_group_id);
+            console.log('[POLL] File ready:', file.asset_group_id, file.cdn_url);
             pendingIds.delete(file.asset_group_id);
 
             setSelectedFiles(prev => prev.map(f =>
@@ -263,21 +253,20 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           return;
         }
 
-        if (attempts >= maxAttempts) {
-          console.warn('[POLL] Max attempts reached');
-          setProcessingIronDriveFiles(false);
-          setError('Some files are taking longer than expected to process');
-          return;
-        }
-
-        setTimeout(poll, 2000);
+        await new Promise(resolve => setTimeout(resolve, 2000));
       } catch (err) {
         console.error('[POLL] Error:', err);
-        setTimeout(poll, 2000);
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
-    };
+    }
 
-    poll();
+    if (pendingIds.size > 0) {
+      console.warn('[POLL] Max attempts reached, some files still pending');
+      setProcessingIronDriveFiles(false);
+      throw new Error('Some files are taking longer than expected to process');
+    }
+
+    setProcessingIronDriveFiles(false);
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -385,12 +374,38 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
       setSubmitProgress('Item created successfully!');
 
+      const pendingIronDriveFiles = selectedFiles.filter(f => f.type === 'irondrive' && f.uploadStatus === 'pending');
       const pendingPCFiles = selectedFiles.filter(f => f.type === 'pc' && f.uploadStatus === 'pending');
 
       if (pendingPCFiles.length > 0) {
         setSubmitProgress(`Uploading ${pendingPCFiles.length} file${pendingPCFiles.length > 1 ? 's' : ''}...`);
         await uploadPCFiles(pendingPCFiles, savedItemId);
         setSubmitProgress('Files uploaded successfully!');
+      }
+
+      if (pendingIronDriveFiles.length > 0) {
+        setSubmitProgress(`Processing ${pendingIronDriveFiles.length} IronDrive file${pendingIronDriveFiles.length > 1 ? 's' : ''}...`);
+
+        for (const file of pendingIronDriveFiles) {
+          const { error: dbError } = await supabase.from('auction_files').insert({
+            item_id: savedItemId,
+            asset_group_id: file.assetGroupId!,
+            variant: 'source',
+            source_key: file.sourceKey!,
+            original_name: file.name,
+            mime_type: file.mimeType!,
+            published_status: 'pending'
+          });
+
+          if (dbError) {
+            console.error('[IRONDRIVE] Error saving file:', dbError);
+            throw new Error(`Failed to save IronDrive file: ${file.name}`);
+          }
+        }
+
+        const assetGroupIds = pendingIronDriveFiles.map(f => f.assetGroupId!);
+        await waitForCdnUrls(assetGroupIds);
+        setSubmitProgress('IronDrive files processed!');
       }
 
       if (item?.id) {

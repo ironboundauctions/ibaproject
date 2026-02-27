@@ -153,6 +153,7 @@ export class DatabaseService {
       `INSERT INTO auction_files (
         asset_group_id,
         variant,
+        item_id,
         cdn_url,
         b2_key,
         width,
@@ -160,9 +161,24 @@ export class DatabaseService {
         duration_seconds,
         original_name,
         published_status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, '', 'published')
+      )
+      SELECT
+        $1,
+        $2,
+        item_id,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        '',
+        'published'
+      FROM auction_files
+      WHERE asset_group_id = $1 AND variant = 'source'
+      LIMIT 1
       ON CONFLICT (asset_group_id, variant)
       DO UPDATE SET
+        item_id = EXCLUDED.item_id,
         cdn_url = EXCLUDED.cdn_url,
         b2_key = EXCLUDED.b2_key,
         width = EXCLUDED.width,

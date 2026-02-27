@@ -76,6 +76,7 @@ export default function GlobalInventoryManagement() {
             }
           });
 
+          console.log('[INVENTORY] Thumbnails loaded:', thumbnails);
           setVideoCountsByItemId(videoCounts);
           setCdnThumbnailsByItemId(thumbnails);
         }
