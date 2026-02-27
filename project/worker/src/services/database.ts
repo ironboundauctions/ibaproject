@@ -163,22 +163,22 @@ export class DatabaseService {
         published_status
       )
       SELECT
-        $1,
-        $2,
-        item_id,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
+        $1::uuid,
+        $2::text,
+        COALESCE(src.item_id, NULL),
+        $3::text,
+        $4::text,
+        $5::integer,
+        $6::integer,
+        $7::numeric,
         '',
         'published'
-      FROM auction_files
-      WHERE asset_group_id = $1 AND variant = 'source'
+      FROM (SELECT 1) AS dummy
+      LEFT JOIN auction_files src ON src.asset_group_id = $1 AND src.variant = 'source'
       LIMIT 1
       ON CONFLICT (asset_group_id, variant)
       DO UPDATE SET
-        item_id = EXCLUDED.item_id,
+        item_id = COALESCE(EXCLUDED.item_id, auction_files.item_id),
         cdn_url = EXCLUDED.cdn_url,
         b2_key = EXCLUDED.b2_key,
         width = EXCLUDED.width,
