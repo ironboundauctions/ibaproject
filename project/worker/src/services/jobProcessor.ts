@@ -121,18 +121,63 @@ export class JobProcessor {
       b2Key: videoB2Key,
     });
 
-    await this.db.markJobCompleted(
-      job.id,
-      job.file_id,
-      '',
-      '',
-      videoUrl
-    );
+    try {
+      logger.info('Generating thumbnail from video', { fileId: file.id });
+      const variants = await this.imageProcessor.processVideoThumbnail(sourceBuffer);
 
-    logger.info('Video processed successfully', {
-      fileId: file.id,
-      assetGroupId: file.asset_group_id,
-      videoUrl,
-    });
+      const { thumbUrl, thumbB2Key, displayUrl, displayB2Key } = await this.storage.uploadVariants(
+        file.asset_group_id,
+        variants.thumb.buffer,
+        variants.display.buffer
+      );
+
+      await this.db.upsertVariant(file.asset_group_id, 'thumb', thumbUrl, {
+        width: variants.thumb.width,
+        height: variants.thumb.height,
+        b2Key: thumbB2Key,
+      });
+
+      await this.db.upsertVariant(file.asset_group_id, 'display', displayUrl, {
+        width: variants.display.width,
+        height: variants.display.height,
+        b2Key: displayB2Key,
+      });
+
+      await this.db.markJobCompleted(
+        job.id,
+        job.file_id,
+        thumbUrl,
+        displayUrl,
+        videoUrl
+      );
+
+      logger.info('Video processed successfully with thumbnail', {
+        fileId: file.id,
+        assetGroupId: file.asset_group_id,
+        videoUrl,
+        thumbUrl,
+        displayUrl,
+      });
+    } catch (thumbnailError) {
+      logger.error('Video thumbnail generation failed, continuing without thumbnail', {
+        fileId: file.id,
+        error: thumbnailError instanceof Error ? thumbnailError.message : 'Unknown error',
+        stack: thumbnailError instanceof Error ? thumbnailError.stack : undefined,
+      });
+
+      await this.db.markJobCompleted(
+        job.id,
+        job.file_id,
+        '',
+        '',
+        videoUrl
+      );
+
+      logger.info('Video processed successfully without thumbnail', {
+        fileId: file.id,
+        assetGroupId: file.asset_group_id,
+        videoUrl,
+      });
+    }
   }
 }
