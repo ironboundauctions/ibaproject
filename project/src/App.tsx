@@ -21,7 +21,7 @@ import { isAdminUser, AuthService } from './services/authService';
 
 type View = 'home' | 'auctions' | 'auction-detail' | 'profile' | 'admin' | 'password-reset';
 
-type AdminView = 'dashboard' | 'auctions' | 'create-event' | 'edit-event' | 'manage-lots' | 'create-lot' | 'edit-lot' | 'user-management' | 'admin-management' | 'create-admin' | 'create-auction' | 'consigners' | 'inventory' | 'admin-recovery';
+type AdminView = 'dashboard' | 'auctions' | 'create-event' | 'edit-event' | 'manage-lots' | 'create-lot' | 'edit-lot' | 'user-management' | 'admin-management' | 'create-admin' | 'create-auction' | 'consigners' | 'inventory' | 'admin-recovery' | 'recently-removed';
 
 function AppContent() {
   const { user, isInitialized } = useAuth();
@@ -66,9 +66,10 @@ function AppContent() {
           const adminRoute = adminPath.substring(1) || 'dashboard';
           
           const validAdminViews: AdminView[] = [
-            'dashboard', 'auctions', 'create-event', 'edit-event', 'manage-lots', 
-            'create-lot', 'edit-lot', 'user-management', 'admin-management', 
-            'create-admin', 'create-auction', 'consigners', 'inventory', 'admin-recovery'
+            'dashboard', 'auctions', 'create-event', 'edit-event', 'manage-lots',
+            'create-lot', 'edit-lot', 'user-management', 'admin-management',
+            'create-admin', 'create-auction', 'consigners', 'inventory', 'admin-recovery',
+            'recently-removed'
           ];
           
           if (validAdminViews.includes(adminRoute as AdminView)) {

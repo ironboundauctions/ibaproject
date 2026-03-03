@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Upload, Loader, ExternalLink } from 'lucide-react';
+import { X, Upload, Loader, ExternalLink, Play } from 'lucide-react';
 import { InventoryItem, CreateInventoryItemData } from '../services/inventoryService';
 import { Consigner } from '../types/consigner';
 import { FileUploadService } from '../services/fileUploadService';
@@ -46,18 +46,25 @@ function guessMimeType(filename: string): string {
 
 export default function InventoryItemFormNew({ item, consigners, onSubmit, onCancel }: Props) {
   const [itemId] = useState(() => item?.id || crypto.randomUUID());
+  const [originalAssetGroupIds] = useState<Set<string>>(new Set());
 
-  const [formData, setFormData] = useState({
-    inventory_number: item?.inventory_number || '',
-    title: item?.title || '',
-    description: item?.description || '',
-    category: item?.category || '',
-    reserve_price: item?.reserve_price?.toString() || '',
-    estimated_value_low: item?.estimated_value_low?.toString() || '',
-    estimated_value_high: item?.estimated_value_high?.toString() || '',
-    consigner_customer_number: '',
-    condition: item?.condition || '',
-    additional_description: item?.notes || ''
+  const [formData, setFormData] = useState(() => {
+    const consigner = item?.consigner_id
+      ? consigners.find(c => c.id === item.consigner_id)
+      : undefined;
+
+    return {
+      inventory_number: item?.inventory_number || '',
+      title: item?.title || '',
+      description: item?.description || '',
+      category: item?.category || '',
+      reserve_price: item?.reserve_price?.toString() || '',
+      estimated_value_low: item?.estimated_value_low?.toString() || '',
+      estimated_value_high: item?.estimated_value_high?.toString() || '',
+      consigner_customer_number: consigner?.customer_number || '',
+      condition: item?.condition || '',
+      additional_description: item?.notes || ''
+    };
   });
 
   const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
@@ -111,7 +118,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         .from('auction_files')
         .select('*')
         .eq('item_id', item.id)
-        .in('variant', ['display', 'thumb', 'source'])
+        .in('variant', ['display', 'thumb', 'source', 'video'])
         .is('detached_at', null)
         .order('created_at', { ascending: true });
 
@@ -129,19 +136,23 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         const existing = Object.values(groupedByAsset).map(group => {
           const displayFile = group.find(f => f.variant === 'display');
           const thumbFile = group.find(f => f.variant === 'thumb');
+          const videoFile = group.find(f => f.variant === 'video');
           const sourceFile = group.find(f => f.variant === 'source');
-          const primaryFile = displayFile || thumbFile || sourceFile || group[0];
+          const primaryFile = displayFile || videoFile || thumbFile || sourceFile || group[0];
 
-          const previewUrl = displayFile?.cdn_url || thumbFile?.cdn_url;
+          const previewUrl = displayFile?.cdn_url || videoFile?.cdn_url || thumbFile?.cdn_url;
 
           console.log('[LOAD] Building file object:', {
             assetGroupId: primaryFile.asset_group_id,
             displayCdnUrl: displayFile?.cdn_url,
+            videoCdnUrl: videoFile?.cdn_url,
             thumbCdnUrl: thumbFile?.cdn_url,
             sourceKey: sourceFile?.source_key,
             previewUrl,
             publishedStatus: primaryFile.published_status
           });
+
+          originalAssetGroupIds.add(primaryFile.asset_group_id);
 
           return {
             id: primaryFile.asset_group_id,
@@ -157,6 +168,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             assetGroupId: primaryFile.asset_group_id
           };
         });
+        console.log('[LOAD] Original asset group IDs:', Array.from(originalAssetGroupIds));
         setSelectedFiles(existing);
       }
     } catch (error) {
@@ -219,9 +231,9 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       try {
         const { data: files, error } = await supabase
           .from('auction_files')
-          .select('asset_group_id, cdn_url, published_status, variant')
+          .select('asset_group_id, cdn_url, published_status, variant, mime_type')
           .in('asset_group_id', Array.from(pendingIds))
-          .eq('variant', 'display');
+          .in('variant', ['display', 'video']);
 
         if (error) throw error;
 
@@ -229,6 +241,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           filesFound: files?.length || 0,
           files: files?.map(f => ({
             asset_group_id: f.asset_group_id,
+            variant: f.variant,
             has_cdn_url: !!f.cdn_url,
             published_status: f.published_status
           }))
@@ -236,7 +249,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
         for (const file of files || []) {
           if (file.cdn_url && file.published_status === 'published') {
-            console.log('[POLL] File ready:', file.asset_group_id, file.cdn_url);
+            console.log('[POLL] File ready:', file.asset_group_id, file.variant, file.cdn_url);
             pendingIds.delete(file.asset_group_id);
 
             setSelectedFiles(prev => prev.map(f =>
@@ -313,17 +326,24 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       ));
 
       try {
-        const result = await FileUploadService.uploadPCFileToWorker(file.file!, itemId);
+        const result = await FileUploadService.uploadPCFileToWorker(file.file!, itemId) as any;
 
         if (result.success && result.files.length > 0) {
-          const displayFile = result.files.find(f => f.variant === 'display') || result.files[0];
+          const displayFile = result.files.find((f: any) => f.variant === 'display') || result.files[0];
+          const assetGroupId = result.asset_group_id;
+
+          console.log('[PC-UPLOAD] Upload successful:', {
+            tempId: file.id,
+            assetGroupId,
+            cdnUrl: displayFile.cdn_url
+          });
 
           setSelectedFiles(prev => prev.map(f =>
             f.id === file.id ? {
               ...f,
               uploadStatus: 'published' as const,
               url: displayFile.cdn_url,
-              assetGroupId: displayFile.id
+              assetGroupId: assetGroupId
             } : f
           ));
         } else {
@@ -408,29 +428,29 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         setSubmitProgress('IronDrive files processed!');
       }
 
-      if (item?.id) {
-        const { data: existingFiles } = await supabase
-          .from('auction_files')
-          .select('asset_group_id')
-          .eq('item_id', item.id);
-
-        if (existingFiles) {
-          const currentAssetGroupIds = selectedFiles
+      if (item?.id && originalAssetGroupIds.size > 0) {
+        const currentAssetGroupIds = new Set(
+          selectedFiles
             .filter(f => f.assetGroupId)
-            .map(f => f.assetGroupId);
+            .map(f => f.assetGroupId!)
+        );
 
-          const assetGroupsToDelete = existingFiles
-            .map(f => f.asset_group_id)
-            .filter(id => !currentAssetGroupIds.includes(id));
+        const assetGroupsToDetach = Array.from(originalAssetGroupIds).filter(
+          id => !currentAssetGroupIds.has(id)
+        );
 
-          if (assetGroupsToDelete.length > 0) {
-            await supabase
-              .from('auction_files')
-              .update({ detached_at: new Date().toISOString() })
-              .in('asset_group_id', assetGroupsToDelete);
+        console.log('[CLEANUP] Original files when form loaded:', Array.from(originalAssetGroupIds));
+        console.log('[CLEANUP] Current files in form:', Array.from(currentAssetGroupIds));
+        console.log('[CLEANUP] Files removed by user:', assetGroupsToDetach);
 
-            console.log('[FORM] Marked files as detached for cleanup');
-          }
+        if (assetGroupsToDetach.length > 0) {
+          await supabase
+            .from('auction_files')
+            .update({ detached_at: new Date().toISOString() })
+            .eq('item_id', item.id)
+            .in('asset_group_id', assetGroupsToDetach);
+
+          console.log('[FORM] Marked removed files as detached for cleanup');
         }
       }
 
@@ -454,7 +474,30 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
+      {/* Quick Save Button at Top */}
+      <div className="flex justify-end">
+        <button
+          type="submit"
+          disabled={isSubmitting || processingIronDriveFiles || selectedFiles.some(f => f.uploadStatus === 'uploading' || f.uploadStatus === 'processing')}
+          className="bg-ironbound-orange-500 text-white px-4 py-1.5 rounded-lg hover:bg-ironbound-orange-600 disabled:opacity-50 text-sm font-medium flex items-center gap-2"
+        >
+          {isSubmitting ? (
+            <>
+              <Loader className="w-3 h-3 animate-spin" />
+              <span>Saving...</span>
+            </>
+          ) : processingIronDriveFiles || selectedFiles.some(f => f.uploadStatus === 'uploading' || f.uploadStatus === 'processing') ? (
+            <>
+              <Loader className="w-3 h-3 animate-spin" />
+              <span>Processing...</span>
+            </>
+          ) : (
+            <>{item ? 'Update Item' : 'Save Item'}</>
+          )}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
         <div>
           <label className="block text-sm font-medium text-white mb-1">
             Inventory Number *
@@ -466,6 +509,24 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             onChange={(e) => setFormData(prev => ({ ...prev, inventory_number: e.target.value }))}
             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-white mb-1">
+            Consigner
+          </label>
+          <select
+            value={formData.consigner_customer_number}
+            onChange={(e) => setFormData(prev => ({ ...prev, consigner_customer_number: e.target.value }))}
+            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+          >
+            <option value="">Select consigner...</option>
+            {consigners.map(consigner => (
+              <option key={consigner.id} value={consigner.customer_number}>
+                {consigner.customer_number} - {consigner.first_name} {consigner.last_name}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div>
@@ -621,7 +682,27 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                   <div key={file.id} className="relative group">
                     {file.url ? (
                       file.isVideo ? (
-                        <video src={file.url} className="w-full h-24 object-cover rounded" />
+                        <div className="relative w-full h-24 bg-gray-900 rounded flex items-center justify-center group cursor-pointer"
+                             onClick={() => {
+                               const video = document.createElement('video');
+                               video.src = file.url!;
+                               video.controls = true;
+                               video.style.maxWidth = '90vw';
+                               video.style.maxHeight = '90vh';
+                               const modal = document.createElement('div');
+                               modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
+                               modal.onclick = () => modal.remove();
+                               modal.appendChild(video);
+                               document.body.appendChild(modal);
+                               video.play();
+                             }}>
+                          <Play className="w-8 h-8 text-white opacity-70 group-hover:opacity-100 transition-opacity absolute z-10" />
+                          <video
+                            src={file.url}
+                            className="absolute inset-0 w-full h-full object-cover rounded opacity-40"
+                            muted
+                          />
+                        </div>
                       ) : (
                         <img
                           src={file.url}
@@ -635,6 +716,11 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                           <>
                             <Loader className="w-6 h-6 text-gray-500 animate-spin mb-1" />
                             <span className="text-xs text-gray-600">Processing...</span>
+                          </>
+                        ) : file.isVideo ? (
+                          <>
+                            <Play className="w-6 h-6 text-gray-500 mb-1" />
+                            <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
                           </>
                         ) : (
                           <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>

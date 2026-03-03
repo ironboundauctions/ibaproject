@@ -1,21 +1,24 @@
 import React, { useEffect, useState } from 'react';
-import { Trash2, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Trash2, RotateCcw, AlertTriangle, FileImage } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface RemovedFile {
   id: string;
-  name: string;
   asset_group_id: string;
-  deleted_at: string;
+  original_name: string;
+  variant: string;
+  cdn_url: string | null;
+  published_status: string;
+  detached_at: string;
   item_id: string | null;
   mime_type: string;
-  size: number;
-  thumb_url: string | null;
-  display_url: string | null;
+  bytes: number;
+  item_title: string | null;
+  item_deleted: boolean;
 }
 
 export function RecentlyRemovedFiles() {
-  const [removedFiles, setRemovedFiles] = useState<RemovedFile[]>([]);
+  const [files, setFiles] = useState<RemovedFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,57 +29,125 @@ export function RecentlyRemovedFiles() {
   const fetchRemovedFiles = async () => {
     try {
       setLoading(true);
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      setError(null);
 
-      const { data, error } = await supabase
+      const { data, error: queryError } = await supabase
         .from('auction_files')
-        .select('*')
-        .not('deleted_at', 'is', null)
-        .gte('deleted_at', thirtyDaysAgo.toISOString())
-        .order('deleted_at', { ascending: false });
+        .select(`
+          id,
+          asset_group_id,
+          original_name,
+          variant,
+          cdn_url,
+          published_status,
+          detached_at,
+          item_id,
+          mime_type,
+          bytes,
+          inventory_items (
+            title,
+            deleted_at
+          )
+        `)
+        .not('detached_at', 'is', null)
+        .eq('variant', 'thumb')
+        .order('detached_at', { ascending: false });
 
-      if (error) throw error;
+      if (queryError) throw queryError;
 
-      setRemovedFiles(data || []);
+      const formattedFiles: RemovedFile[] = (data || []).map((file: any) => ({
+        id: file.id,
+        asset_group_id: file.asset_group_id,
+        original_name: file.original_name,
+        variant: file.variant,
+        cdn_url: file.cdn_url,
+        published_status: file.published_status,
+        detached_at: file.detached_at,
+        item_id: file.item_id,
+        mime_type: file.mime_type,
+        bytes: file.bytes,
+        item_title: file.inventory_items?.title || null,
+        item_deleted: !!file.inventory_items?.deleted_at
+      }));
+
+      setFiles(formattedFiles);
     } catch (err) {
-      console.error('Error fetching removed files:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch removed files');
+      console.error('[RecentlyRemovedFiles] Error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load removed files');
     } finally {
       setLoading(false);
     }
   };
 
-  const calculateDaysRemaining = (deletedAt: string): number => {
-    const deleted = new Date(deletedAt);
-    const now = new Date();
-    const thirtyDaysLater = new Date(deleted);
-    thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+  const calculateDaysRemaining = (detachedAt: string): number => {
+    const detached = new Date(detachedAt);
+    const deletionDate = new Date(detached);
+    deletionDate.setDate(deletionDate.getDate() + 30);
 
-    const diffMs = thirtyDaysLater.getTime() - now.getTime();
+    const now = new Date();
+    const diffMs = deletionDate.getTime() - now.getTime();
     const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
     return Math.max(0, diffDays);
   };
 
-  const handleRestore = async (fileId: string) => {
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+  };
+
+  const handleRestore = async (file: RemovedFile) => {
+    if (file.item_deleted) {
+      alert('Cannot restore this file because the original item has been deleted.');
+      return;
+    }
+
+    if (!confirm(`Restore "${file.original_name}" back to "${file.item_title}"?`)) {
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('auction_files')
-        .update({ deleted_at: null })
-        .eq('id', fileId);
+        .update({ detached_at: null })
+        .eq('asset_group_id', file.asset_group_id);
 
       if (error) throw error;
 
       await fetchRemovedFiles();
     } catch (err) {
-      console.error('Error restoring file:', err);
+      console.error('[RecentlyRemovedFiles] Restore error:', err);
       alert(err instanceof Error ? err.message : 'Failed to restore file');
     }
   };
 
-  const handleDeleteNow = async (fileId: string) => {
-    if (!confirm('Are you sure you want to permanently delete this file? This action cannot be undone.')) {
+  const handlePermanentDelete = async (file: RemovedFile) => {
+    const confirmMessage = `PERMANENT DELETION WARNING
+
+This will permanently delete:
+• ${file.original_name}
+• All variants (thumb, display, source)
+• From database and B2 storage
+
+This action CANNOT be undone.
+
+Type "DELETE" to confirm:`;
+
+    const userInput = prompt(confirmMessage);
+
+    if (userInput !== 'DELETE') {
       return;
     }
 
@@ -84,21 +155,16 @@ export function RecentlyRemovedFiles() {
       const { error } = await supabase
         .from('auction_files')
         .delete()
-        .eq('id', fileId);
+        .eq('asset_group_id', file.asset_group_id);
 
       if (error) throw error;
 
+      alert('File permanently deleted. B2 cleanup will occur automatically.');
       await fetchRemovedFiles();
     } catch (err) {
-      console.error('Error deleting file:', err);
+      console.error('[RecentlyRemovedFiles] Delete error:', err);
       alert(err instanceof Error ? err.message : 'Failed to delete file');
     }
-  };
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   if (loading) {
@@ -132,96 +198,111 @@ export function RecentlyRemovedFiles() {
         <h2 className="text-xl font-semibold text-gray-900">Recently Removed Files</h2>
       </div>
 
-      {removedFiles.length === 0 ? (
+      {files.length === 0 ? (
         <p className="text-gray-600">No recently removed files</p>
       ) : (
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">
-            Files are kept for 30 days after removal. You can restore them during this period.
-          </p>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+            <p className="text-sm text-blue-800">
+              Files are automatically deleted after 30 days. You can restore them during this period.
+            </p>
+          </div>
 
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead>
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    File
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Preview
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Size
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Days Remaining
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {removedFiles.map((file) => {
-                  const daysRemaining = calculateDaysRemaining(file.deleted_at);
-                  const isUrgent = daysRemaining <= 7;
+          <div className="space-y-2">
+            {files.map((file) => {
+              const daysRemaining = calculateDaysRemaining(file.detached_at);
+              const isUrgent = daysRemaining <= 7;
+              const canRestore = !file.item_deleted;
 
-                  return (
-                    <tr key={file.id}>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">{file.name}</div>
-                        <div className="text-sm text-gray-500">{file.mime_type}</div>
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        {file.thumb_url ? (
-                          <img
-                            src={file.thumb_url}
-                            alt={file.name}
-                            className="w-12 h-12 object-cover rounded"
-                          />
-                        ) : (
-                          <div className="w-12 h-12 bg-gray-100 rounded flex items-center justify-center">
-                            <span className="text-xs text-gray-400">No preview</span>
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {formatFileSize(file.size)}
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <span
-                          className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                            isUrgent
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-yellow-100 text-yellow-800'
-                          }`}
-                        >
-                          {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-sm font-medium">
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleRestore(file.id)}
-                            className="inline-flex items-center gap-1 px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-                          >
-                            <RotateCcw className="w-4 h-4" />
-                            Restore
-                          </button>
-                          <button
-                            onClick={() => handleDeleteNow(file.id)}
-                            className="inline-flex items-center gap-1 px-3 py-1 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                            Delete Now
-                          </button>
+              return (
+                <div
+                  key={file.id}
+                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="flex-shrink-0">
+                      {file.cdn_url && file.published_status === 'published' ? (
+                        <img
+                          src={file.cdn_url}
+                          alt={file.original_name}
+                          className="w-16 h-16 object-cover rounded border border-gray-200"
+                        />
+                      ) : (
+                        <div className="w-16 h-16 bg-gray-100 rounded border border-gray-200 flex items-center justify-center">
+                          <FileImage className="w-6 h-6 text-gray-400" />
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-medium text-gray-900 truncate">
+                            {file.original_name}
+                          </h3>
+
+                          <div className="mt-1 space-y-1">
+                            <p className="text-sm text-gray-600">
+                              From: {file.item_title ? (
+                                <span className={file.item_deleted ? 'text-red-600 line-through' : ''}>
+                                  {file.item_title}
+                                  {file.item_deleted && ' (deleted)'}
+                                </span>
+                              ) : (
+                                <span className="italic text-gray-400">Unknown item</span>
+                              )}
+                            </p>
+
+                            <p className="text-sm text-gray-500">
+                              Removed: {formatDate(file.detached_at)} • {formatFileSize(file.bytes)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <div className="text-right">
+                            <span
+                              className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${
+                                isUrgent
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}
+                            >
+                              {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'}
+                            </span>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleRestore(file)}
+                              disabled={!canRestore}
+                              className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md transition-colors ${
+                                canRestore
+                                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                              }`}
+                              title={canRestore ? 'Restore file' : 'Cannot restore - original item deleted'}
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                              Restore
+                            </button>
+
+                            <button
+                              onClick={() => handlePermanentDelete(file)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+                              title="Permanently delete file"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              Delete Now
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { config } from './config.js';
 import { logger } from './logger.js';
@@ -77,7 +77,7 @@ class MediaPublishingWorker {
 
     app.use(express.json());
 
-    app.use((req, res, next) => {
+    app.use((req: Request, res: Response, next: NextFunction) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Info, Apikey');
@@ -90,7 +90,7 @@ class MediaPublishingWorker {
       next();
     });
 
-    app.get('/health', (req, res) => {
+    app.get('/health', (req: Request, res: Response) => {
       res.json({
         status: 'ok',
         uptime: process.uptime(),
@@ -98,8 +98,51 @@ class MediaPublishingWorker {
       });
     });
 
-    app.post('/api/upload-and-process', upload.single('file'), async (req, res) => {
+    app.post('/api/upload-and-process', upload.single('file'), async (req: Request, res: Response) => {
       await this.uploadHandler.handlePCUpload(req, res);
+    });
+
+    app.post('/api/delete-asset-group', async (req: Request, res: Response) => {
+      try {
+        const { assetGroupId } = req.body;
+
+        if (!assetGroupId) {
+          res.status(400).json({ error: 'Missing assetGroupId' });
+          return;
+        }
+
+        logger.info('Immediate deletion request received', { assetGroupId });
+
+        const hasActive = await this.db.hasActiveReferences(assetGroupId);
+        if (hasActive) {
+          res.status(400).json({
+            error: 'Cannot delete: asset group has active references (still attached to items)'
+          });
+          return;
+        }
+
+        await this.storage.deleteAssetGroup(assetGroupId);
+        logger.info('Asset group deleted from B2', { assetGroupId });
+
+        const filesToDelete = await this.db.getFilesByAssetGroup(assetGroupId);
+        const fileIds = filesToDelete.map(f => f.id);
+
+        if (fileIds.length > 0) {
+          await this.db.deleteFiles(fileIds);
+          logger.info('Database records deleted', { assetGroupId, count: fileIds.length });
+        }
+
+        res.json({
+          success: true,
+          message: `Deleted ${fileIds.length} file(s) from B2 and database`,
+          deletedCount: fileIds.length
+        });
+      } catch (error) {
+        logger.error('Delete asset group failed', error as Error);
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Deletion failed'
+        });
+      }
     });
 
     const port = process.env.PORT || 3000;

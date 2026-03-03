@@ -23,6 +23,7 @@ export interface UploadedFile {
 
 export interface UploadResponse {
   success: boolean;
+  asset_group_id?: string;
   files: UploadedFile[];
   error?: string;
 }

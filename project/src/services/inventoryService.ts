@@ -148,6 +148,20 @@ export class InventoryService {
     console.log(`[INVENTORY] === Deleting item ${id} ===`);
     console.log(`[INVENTORY] Found ${files?.length || 0} file(s) for item ${id}`);
 
+    // FIRST: Mark all files as detached (for "Recently Removed" feature)
+    if (files && files.length > 0) {
+      const { error: detachError } = await supabase
+        .from('auction_files')
+        .update({ detached_at: new Date().toISOString() })
+        .eq('item_id', id);
+
+      if (detachError) {
+        console.error('[INVENTORY] Error marking files as detached:', detachError);
+      } else {
+        console.log(`[INVENTORY] Marked ${files.length} file(s) as detached`);
+      }
+    }
+
     // For each file, check if other items reference it BEFORE we delete anything
     const filesToDelete: string[] = [];
 
@@ -308,5 +322,41 @@ export class InventoryService {
       publishStatus: file.publish_status || undefined,
       name: file.name || undefined
     }));
+  }
+
+  static async restoreItem(itemId: string): Promise<void> {
+    try {
+      console.log('[INVENTORY] Restoring item:', itemId);
+
+      const { error } = await supabase
+        .from('inventory_items')
+        .update({ deleted_at: null })
+        .eq('id', itemId);
+
+      if (error) throw error;
+
+      console.log('[INVENTORY] Item restored successfully');
+    } catch (error) {
+      console.error('[INVENTORY] Failed to restore item:', error);
+      throw error;
+    }
+  }
+
+  static async permanentlyDeleteItem(itemId: string): Promise<void> {
+    try {
+      console.log('[INVENTORY] Permanently deleting item:', itemId);
+
+      const { error } = await supabase
+        .from('inventory_items')
+        .delete()
+        .eq('id', itemId);
+
+      if (error) throw error;
+
+      console.log('[INVENTORY] Item permanently deleted. Associated files and B2 cleanup will occur automatically.');
+    } catch (error) {
+      console.error('[INVENTORY] Failed to permanently delete item:', error);
+      throw error;
+    }
   }
 }

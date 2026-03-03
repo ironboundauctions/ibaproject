@@ -1,0 +1,6 @@
+# Project Root Marker
+# Created: 2026-03-03
+#
+# This file marks the correct root of the project.
+# DO NOT recreate /project/project/ folder - it was a stale snapshot.
+# All current code is in this directory.

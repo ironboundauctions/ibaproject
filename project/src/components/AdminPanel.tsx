@@ -14,11 +14,11 @@ import AdminEventForm from './AdminEventForm';
 import AdminLotForm from './AdminLotForm';
 import LotsGrid from './LotsGrid';
 import CreateAuctionModal from './CreateAuctionModal';
-import IronDriveConnectionTest from './IronDriveConnectionTest';
 import { AdminManagementPanel } from './AdminManagementPanel';
 import { UserPromotionPanel } from './UserPromotionPanel';
-import OrphanedFilesCheckerUI from './OrphanedFilesChecker';
 import { RecentlyRemovedFiles } from './RecentlyRemovedFiles';
+import { RecentlyRemovedItems } from './RecentlyRemovedItems';
+import { OrphanedRecordsCleanup } from './OrphanedRecordsCleanup';
 
 interface AdminPanelProps {
   onBack: () => void;
@@ -290,17 +290,6 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                 Admin Management
               </button>
             )}
-            <button
-              onClick={() => handleTabChange('irondrive-settings')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'irondrive-settings'
-                  ? 'border-ironbound-orange-500 text-ironbound-orange-500'
-                  : 'border-transparent text-white hover:text-ironbound-orange-300 hover:border-ironbound-orange-300'
-              }`}
-            >
-              <Package className="h-4 w-4 inline mr-2" />
-              IronDrive
-            </button>
           </nav>
         </div>
 
@@ -470,7 +459,11 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
 
         {/* Recently Removed Tab */}
         {activeTab === 'recently-removed' && (
-          <RecentlyRemovedFiles />
+          <div className="space-y-6">
+            <RecentlyRemovedFiles />
+            <RecentlyRemovedItems />
+            <OrphanedRecordsCleanup />
+          </div>
         )}
 
         {/* Auctions Management Tab */}
@@ -647,45 +640,6 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
           </div>
         )}
 
-        {/* IronDrive Settings Tab */}
-        {activeTab === 'irondrive-settings' && (
-          <div className="space-y-6">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-white mb-2">IronDrive File Server</h2>
-              <p className="text-ironbound-grey-200">Configure connection to your RAID file server</p>
-            </div>
-            
-            <IronDriveConnectionTest />
-
-            <OrphanedFilesCheckerUI />
-
-            <div className="bg-white rounded-xl shadow-md p-6">
-              <h3 className="text-lg font-semibold text-ironbound-grey-900 mb-4">Integration Details</h3>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <h4 className="font-medium text-ironbound-grey-900 mb-2">IronDrive Authentication</h4>
-                  <div className="space-y-2 text-sm text-ironbound-grey-600">
-                    <p><strong>Username:</strong> ibaproject.bid@outlook.com</p>
-                    <p><strong>Password:</strong> ••••••••</p>
-                    <p><strong>Method:</strong> JWT Bearer Token</p>
-                    <p><strong>Endpoint:</strong> /ecommerce-auth</p>
-                  </div>
-                </div>
-                
-                <div>
-                  <h4 className="font-medium text-ironbound-grey-900 mb-2">File Organization</h4>
-                  <div className="space-y-2 text-sm text-ironbound-grey-600">
-                    <p><strong>Storage:</strong> Your RAID server via IronDrive</p>
-                    <p><strong>Naming:</strong> inventory-number-main.jpg, inventory-number-img2.jpg</p>
-                    <p><strong>Organization:</strong> Files grouped by inventory number</p>
-                    <p><strong>Access:</strong> Direct URLs from your RAID server</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

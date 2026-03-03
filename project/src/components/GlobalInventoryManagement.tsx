@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X } from 'lucide-react';
+import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X } from 'lucide-react';
 import { InventoryService, InventoryItem } from '../services/inventoryService';
 import { ConsignerService } from '../services/consignerService';
 import { Consigner } from '../types/consigner';
@@ -51,33 +51,49 @@ export default function GlobalInventoryManagement() {
       setItems(itemsData);
       setConsigners(consignersData);
 
-      // Fetch media counts and thumbnails for all items
+      // Fetch file counts for all items (only count SOURCE files to avoid triple-counting)
       if (itemsData.length > 0) {
         const itemIds = itemsData.map(item => item.id);
 
-        const { data: allFiles, error: filesError } = await supabase
+        const { data: sourceFiles, error: filesError } = await supabase
           .from('auction_files')
           .select('item_id, cdn_url, mime_type, variant')
           .in('item_id', itemIds)
+          .eq('variant', 'source')
+          .eq('published_status', 'published')
+          .is('detached_at', null);
+
+        if (!filesError && sourceFiles) {
+          const fileCounts: Record<string, number> = {};
+
+          sourceFiles.forEach(file => {
+            fileCounts[file.item_id] = (fileCounts[file.item_id] || 0) + 1;
+          });
+
+          console.log('[INVENTORY] File counts loaded:', fileCounts);
+          setVideoCountsByItemId(fileCounts);
+        }
+
+        // Fetch thumbnails separately (thumb variant for display)
+        const { data: thumbFiles, error: thumbError } = await supabase
+          .from('auction_files')
+          .select('item_id, cdn_url')
+          .in('item_id', itemIds)
+          .eq('variant', 'thumb')
           .eq('published_status', 'published')
           .is('detached_at', null)
           .order('created_at', { ascending: true });
 
-        if (!filesError && allFiles) {
-          const videoCounts: Record<string, number> = {};
+        if (!thumbError && thumbFiles) {
           const thumbnails: Record<string, string> = {};
 
-          allFiles.forEach(file => {
-            const isVideo = file.mime_type?.startsWith('video/') || false;
-            if (isVideo) {
-              videoCounts[file.item_id] = (videoCounts[file.item_id] || 0) + 1;
-            } else if (!thumbnails[file.item_id] && file.variant === 'thumb') {
+          thumbFiles.forEach(file => {
+            if (!thumbnails[file.item_id]) {
               thumbnails[file.item_id] = file.cdn_url;
             }
           });
 
           console.log('[INVENTORY] Thumbnails loaded:', thumbnails);
-          setVideoCountsByItemId(videoCounts);
           setCdnThumbnailsByItemId(thumbnails);
         }
       }
@@ -586,15 +602,12 @@ export default function GlobalInventoryManagement() {
                             );
                           })()}
                           {(() => {
-                            const mainImageCount = item.image_url ? 1 : 0;
-                            const additionalImagesCount = item.additional_images?.length || 0;
-                            const videoCount = videoCountsByItemId[item.id] || 0;
-                            const totalMediaCount = mainImageCount + additionalImagesCount + videoCount;
+                            const fileCount = videoCountsByItemId[item.id] || 0;
 
-                            if (totalMediaCount > 0) {
+                            if (fileCount > 0) {
                               return (
                                 <div className="absolute bottom-0 right-0 bg-ironbound-orange-500 text-white text-xs px-1.5 py-0.5 rounded-tl font-medium">
-                                  {totalMediaCount}
+                                  {fileCount}
                                 </div>
                               );
                             }

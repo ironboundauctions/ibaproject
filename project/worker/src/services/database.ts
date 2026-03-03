@@ -295,6 +295,14 @@ export class DatabaseService {
     return count > 0;
   }
 
+  async getFilesByAssetGroup(assetGroupId: string): Promise<AuctionFile[]> {
+    const result = await this.pool.query<AuctionFile>(
+      `SELECT * FROM auction_files WHERE asset_group_id = $1`,
+      [assetGroupId]
+    );
+    return result.rows;
+  }
+
   async deleteFiles(fileIds: string[]): Promise<void> {
     if (fileIds.length === 0) return;
 
