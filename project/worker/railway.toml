@@ -8,6 +8,6 @@ restartPolicyType = "always"
 restartPolicyMaxRetries = 10
 
 [healthcheck]
-path = "/"
+path = "/health"
 timeout = 100
 interval = 60
