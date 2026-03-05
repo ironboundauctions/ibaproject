@@ -275,18 +275,37 @@ export class InventoryService {
 
       const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
 
+      // CRITICAL: Detach all files first so the worker can delete them
+      const { error: detachError } = await supabase
+        .from('auction_files')
+        .update({ detached_at: new Date().toISOString() })
+        .eq('item_id', itemId)
+        .is('detached_at', null);
+
+      if (detachError) {
+        console.error('[INVENTORY] Error detaching files:', detachError);
+        throw new Error('Failed to detach files before deletion');
+      }
+
       // Delete from B2 via worker
       const workerUrl = import.meta.env.VITE_WORKER_URL;
       if (workerUrl && uniqueAssetGroups.size > 0) {
         for (const assetGroupId of uniqueAssetGroups) {
           try {
-            await fetch(`${workerUrl}/api/delete-asset-group`, {
+            const response = await fetch(`${workerUrl}/api/delete-asset-group`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ assetGroupId }),
             });
+
+            if (!response.ok) {
+              const errorData = await response.json();
+              console.error('[INVENTORY] Worker deletion failed:', errorData);
+              throw new Error(errorData.error || 'Worker deletion failed');
+            }
           } catch (err) {
             console.error('[INVENTORY] Failed to delete asset group from B2:', assetGroupId, err);
+            throw err;
           }
         }
       }
@@ -298,7 +317,8 @@ export class InventoryService {
         .eq('item_id', itemId);
 
       if (filesError) {
-        console.error('[INVENTORY] Error deleting files:', filesError);
+        console.error('[INVENTORY] Error deleting file records:', filesError);
+        throw filesError;
       }
 
       // Delete the item

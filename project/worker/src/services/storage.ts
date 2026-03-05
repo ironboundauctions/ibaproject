@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -124,17 +124,30 @@ export class StorageService {
     }
 
     try {
-      await this.s3Client.send(
+      const result = await this.s3Client.send(
         new DeleteObjectsCommand({
           Bucket: config.b2.bucket,
           Delete: {
             Objects: keys.map(Key => ({ Key })),
-            Quiet: true,
+            Quiet: false,
           },
         })
       );
 
-      logger.info('Asset group deleted successfully', { assetGroupId, keysAttempted: keys.length });
+      if (result.Errors && result.Errors.length > 0) {
+        logger.warn('Some files failed to delete from B2', {
+          assetGroupId,
+          errors: result.Errors,
+          deleted: result.Deleted?.length || 0
+        });
+      }
+
+      logger.info('Asset group deletion complete', {
+        assetGroupId,
+        keysAttempted: keys.length,
+        deleted: result.Deleted?.length || 0,
+        errors: result.Errors?.length || 0
+      });
     } catch (error) {
       logger.error('Asset group deletion failed', { assetGroupId, error: error as Error });
       throw error;
@@ -147,5 +160,21 @@ export class StorageService {
 
   getCdnUrl(key: string): string {
     return `${config.cdn.baseUrl}/${key}`;
+  }
+
+  async listAssetGroupFiles(assetGroupId: string): Promise<string[]> {
+    try {
+      const result = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: config.b2.bucket,
+          Prefix: `assets/${assetGroupId}/`,
+        })
+      );
+
+      return result.Contents?.map(obj => obj.Key || '') || [];
+    } catch (error) {
+      logger.error('Failed to list asset group files', { assetGroupId, error: error as Error });
+      throw error;
+    }
   }
 }

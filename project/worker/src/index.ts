@@ -102,6 +102,33 @@ class MediaPublishingWorker {
       await this.uploadHandler.handlePCUpload(req, res);
     });
 
+    app.get('/api/check-asset-group/:assetGroupId', async (req: Request, res: Response) => {
+      try {
+        const { assetGroupId } = req.params;
+
+        if (!assetGroupId) {
+          res.status(400).json({ error: 'Missing assetGroupId' });
+          return;
+        }
+
+        const files = await this.storage.listAssetGroupFiles(assetGroupId);
+        const dbFiles = await this.db.getFilesByAssetGroup(assetGroupId);
+
+        res.json({
+          assetGroupId,
+          filesInB2: files,
+          filesInDB: dbFiles.map(f => ({ id: f.id, variant: f.variant, detached: !!f.detached_at })),
+          b2Count: files.length,
+          dbCount: dbFiles.length
+        });
+      } catch (error) {
+        logger.error('Check asset group failed', error as Error);
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Check failed'
+        });
+      }
+    });
+
     app.post('/api/delete-asset-group', async (req: Request, res: Response) => {
       try {
         const { assetGroupId } = req.body;

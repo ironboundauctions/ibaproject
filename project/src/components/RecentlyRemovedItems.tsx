@@ -142,18 +142,37 @@ Type "DELETE" to confirm:`;
 
       const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
 
+      // CRITICAL: Detach all files first so the worker can delete them
+      const { error: detachError } = await supabase
+        .from('auction_files')
+        .update({ detached_at: new Date().toISOString() })
+        .eq('item_id', item.id)
+        .is('detached_at', null);
+
+      if (detachError) {
+        console.error('[RecentlyRemovedItems] Error detaching files:', detachError);
+        throw new Error('Failed to detach files before deletion');
+      }
+
       // Delete each asset group from B2 via worker
       const workerUrl = import.meta.env.VITE_WORKER_URL;
       if (workerUrl && uniqueAssetGroups.size > 0) {
         for (const assetGroupId of uniqueAssetGroups) {
           try {
-            await fetch(`${workerUrl}/api/delete-asset-group`, {
+            const response = await fetch(`${workerUrl}/api/delete-asset-group`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ assetGroupId }),
             });
+
+            if (!response.ok) {
+              const errorData = await response.json();
+              console.error('[RecentlyRemovedItems] Worker deletion failed:', errorData);
+              throw new Error(errorData.error || 'Worker deletion failed');
+            }
           } catch (err) {
-            console.error('Failed to delete asset group from B2:', assetGroupId, err);
+            console.error('[RecentlyRemovedItems] Failed to delete asset group from B2:', assetGroupId, err);
+            throw err;
           }
         }
       }
@@ -165,7 +184,8 @@ Type "DELETE" to confirm:`;
         .eq('item_id', item.id);
 
       if (filesError) {
-        console.error('Error deleting files:', filesError);
+        console.error('[RecentlyRemovedItems] Error deleting file records:', filesError);
+        throw filesError;
       }
 
       // Delete the item
