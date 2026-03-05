@@ -169,6 +169,8 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
               <video
                 src={currentItem.url}
                 controls
+                disablePictureInPicture
+                controlsList="nodownload nofullscreen noremoteplayback"
                 className="max-w-full max-h-full object-contain"
                 style={{
                   width: isFullscreen ? '100%' : 'auto',
@@ -248,6 +250,8 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
                       <video
                         src={item.url}
                         className="w-full h-full object-cover"
+                        disablePictureInPicture
+                        controlsList="nodownload nofullscreen noremoteplayback"
                       />
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div className="bg-black bg-opacity-60 rounded-full p-1">

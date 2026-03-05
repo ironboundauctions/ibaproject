@@ -138,6 +138,16 @@ export class DatabaseService {
     }
   }
 
+  async getNextDisplayOrder(itemId: string): Promise<number> {
+    const result = await this.pool.query<{ max_order: number | null }>(
+      `SELECT COALESCE(MAX(display_order), -1) + 1 as max_order
+       FROM auction_files
+       WHERE item_id = $1`,
+      [itemId]
+    );
+    return result.rows[0].max_order || 0;
+  }
+
   async upsertVariant(
     assetGroupId: string,
     variant: string,
@@ -147,6 +157,7 @@ export class DatabaseService {
       height?: number;
       durationSeconds?: number;
       b2Key?: string;
+      displayOrder?: number;
     }
   ): Promise<string> {
     const result = await this.pool.query<{ id: string }>(
@@ -160,7 +171,8 @@ export class DatabaseService {
         height,
         duration_seconds,
         original_name,
-        published_status
+        published_status,
+        display_order
       )
       SELECT
         $1::uuid,
@@ -172,7 +184,8 @@ export class DatabaseService {
         $6::integer,
         $7::numeric,
         '',
-        'published'
+        'published',
+        $8::integer
       FROM (SELECT 1) AS dummy
       LEFT JOIN auction_files src ON src.asset_group_id = $1 AND src.variant = 'source'
       LIMIT 1
@@ -185,6 +198,7 @@ export class DatabaseService {
         height = EXCLUDED.height,
         duration_seconds = EXCLUDED.duration_seconds,
         published_status = 'published',
+        display_order = COALESCE(EXCLUDED.display_order, auction_files.display_order),
         updated_at = NOW()
       RETURNING id`,
       [
@@ -195,6 +209,7 @@ export class DatabaseService {
         metadata.width || null,
         metadata.height || null,
         metadata.durationSeconds || null,
+        metadata.displayOrder ?? 0,
       ]
     );
 
@@ -272,10 +287,11 @@ export class DatabaseService {
   }
 
   async getFilesForCleanup(): Promise<AuctionFile[]> {
+    // TESTING MODE: Immediate deletion (was 30 days)
     const result = await this.pool.query<AuctionFile>(
       `SELECT * FROM auction_files
        WHERE detached_at IS NOT NULL
-         AND detached_at < NOW() - INTERVAL '30 days'
+         AND detached_at < NOW()
        ORDER BY detached_at ASC
        LIMIT 100`
     );

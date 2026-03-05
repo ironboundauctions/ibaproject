@@ -1,6 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { X, Upload, Loader, ExternalLink, Play, GripVertical } from 'lucide-react';
-import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  horizontalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { InventoryItem, CreateInventoryItemData } from '../services/inventoryService';
 import { Consigner } from '../types/consigner';
 import { FileUploadService } from '../services/fileUploadService';
@@ -22,7 +38,6 @@ interface SelectedFile {
   backupUrl?: string;
   name: string;
   isVideo: boolean;
-  type: 'pc' | 'irondrive';
   sourceKey?: string;
   mimeType?: string;
   uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
@@ -45,6 +60,137 @@ function guessMimeType(filename: string): string {
     webm: 'video/webm'
   };
   return mimeTypes[ext] || 'application/octet-stream';
+}
+
+interface SortableFileItemProps {
+  file: SelectedFile;
+  onRemove: (id: string) => void;
+  onImageClick: (file: SelectedFile) => void;
+  onVideoClick: (file: SelectedFile) => void;
+}
+
+function SortableFileItem({ file, onRemove, onImageClick, onVideoClick }: SortableFileItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: file.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`relative group w-32 select-none ${isDragging ? 'z-50' : ''}`}
+    >
+      <div
+        {...attributes}
+        {...listeners}
+        className="absolute bottom-1 left-1 z-40 bg-gray-800 bg-opacity-90 text-white rounded p-1 cursor-grab active:cursor-grabbing hover:bg-gray-700"
+        title="Drag to reorder"
+      >
+        <GripVertical className="w-4 h-4" />
+      </div>
+
+      {file.url ? (
+        file.isVideo ? (
+          <div
+            className="relative w-32 h-24 bg-gray-900 rounded flex items-center justify-center group cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              onVideoClick(file);
+            }}
+          >
+            <Play className="w-8 h-8 text-white opacity-70 group-hover:opacity-100 transition-opacity absolute z-10 pointer-events-none" />
+            <video
+              src={file.url}
+              className="absolute inset-0 w-full h-full object-cover rounded opacity-40 pointer-events-none"
+              muted
+              draggable={false}
+            />
+          </div>
+        ) : (
+          <div
+            className="w-32 h-24 cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              onImageClick(file);
+            }}
+          >
+            <img
+              src={file.url}
+              alt={file.name}
+              draggable={false}
+              className="w-full h-full object-cover rounded select-none pointer-events-none"
+            />
+          </div>
+        )
+      ) : (
+        <div className="w-32 h-24 bg-gray-200 rounded flex flex-col items-center justify-center">
+          {file.uploadStatus === 'processing' ? (
+            <>
+              <Loader className="w-6 h-6 text-gray-500 animate-spin mb-1" />
+              <span className="text-xs text-gray-600">Processing...</span>
+            </>
+          ) : file.isVideo ? (
+            <>
+              <Play className="w-6 h-6 text-gray-500 mb-1" />
+              <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
+            </>
+          ) : (
+            <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
+          )}
+        </div>
+      )}
+
+      {file.uploadStatus === 'pending' && (
+        <div className="absolute top-1 left-1 bg-yellow-500 text-white text-xs px-2 py-0.5 rounded z-10">
+          Ready
+        </div>
+      )}
+      {file.uploadStatus === 'uploading' && (
+        <div className="absolute inset-0 bg-black bg-opacity-50 rounded flex items-center justify-center z-10">
+          <Loader className="w-6 h-6 text-white animate-spin" />
+        </div>
+      )}
+      {file.uploadStatus === 'processing' && (
+        <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs px-2 py-0.5 rounded z-10">
+          Processing...
+        </div>
+      )}
+      {file.uploadStatus === 'published' && (
+        <div className="absolute top-1 left-1 bg-green-500 text-white text-xs px-2 py-0.5 rounded z-10">
+          ✓ Ready
+        </div>
+      )}
+      {file.uploadStatus === 'error' && (
+        <div className="absolute inset-0 bg-red-500 bg-opacity-75 rounded flex items-center justify-center z-10">
+          <span className="text-white text-xs px-2 text-center">
+            {file.errorMessage || 'Error'}
+          </span>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove(file.id);
+        }}
+        className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-30 pointer-events-auto"
+      >
+        <X className="w-4 h-4" />
+      </button>
+    </div>
+  );
 }
 
 export default function InventoryItemFormNew({ item, consigners, onSubmit, onCancel }: Props) {
@@ -168,7 +314,6 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
           return {
             id: primaryFile.asset_group_id,
-            type: (sourceFile?.source_key ? 'irondrive' : 'pc') as 'pc' | 'irondrive',
             url: previewUrl,
             name: sourceFile?.original_name || primaryFile.original_name || 'file',
             isVideo,
@@ -211,7 +356,6 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
         fileRecords.push({
           id: assetGroupId,
-          type: 'irondrive' as const,
           url: '',
           name: fileName,
           isVideo: mimeType.startsWith('video/'),
@@ -305,7 +449,6 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
     const newFiles: SelectedFile[] = mediaFiles.map(file => ({
       id: `temp-${Date.now()}-${Math.random()}`,
-      type: 'pc' as const,
       file,
       url: URL.createObjectURL(file),
       name: file.name,
@@ -328,19 +471,26 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     });
   };
 
-  const handleDragEnd = (result: DropResult) => {
-    console.log('[DRAG] handleDragEnd called:', result);
-    if (!result.destination) {
-      console.log('[DRAG] No destination, drag cancelled');
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id) {
       return;
     }
 
-    const items = Array.from(selectedFiles);
-    const [reorderedItem] = items.splice(result.source.index, 1);
-    items.splice(result.destination.index, 0, reorderedItem);
+    setSelectedFiles((files) => {
+      const oldIndex = files.findIndex((f) => f.id === active.id);
+      const newIndex = files.findIndex((f) => f.id === over.id);
 
-    console.log('[DRAG] Reordered items:', items.map(f => f.id));
-    setSelectedFiles(items);
+      return arrayMove(files, oldIndex, newIndex);
+    });
   };
 
   const uploadPCFiles = async (filesToUpload: SelectedFile[], itemId: string) => {
@@ -422,8 +572,9 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
       setSubmitProgress('Item created successfully!');
 
-      const pendingIronDriveFiles = selectedFiles.filter(f => f.type === 'irondrive' && f.uploadStatus === 'pending');
-      const pendingPCFiles = selectedFiles.filter(f => f.type === 'pc' && f.uploadStatus === 'pending');
+      // Infer type from data: IronDrive files have sourceKey, PC files have file object
+      const pendingIronDriveFiles = selectedFiles.filter(f => f.uploadStatus === 'pending' && f.sourceKey);
+      const pendingPCFiles = selectedFiles.filter(f => f.uploadStatus === 'pending' && f.file);
 
       if (pendingPCFiles.length > 0) {
         setSubmitProgress(`Uploading ${pendingPCFiles.length} file${pendingPCFiles.length > 1 ? 's' : ''}...`);
@@ -490,11 +641,16 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
         if (file.assetGroupId) {
-          await supabase
-            .from('auction_files')
-            .update({ display_order: i })
-            .eq('item_id', savedItemId)
-            .eq('asset_group_id', file.assetGroupId);
+          // Update each variant separately to avoid any issues
+          const { error } = await supabase.rpc('update_display_order', {
+            p_item_id: savedItemId,
+            p_asset_group_id: file.assetGroupId,
+            p_display_order: i
+          });
+
+          if (error) {
+            console.error('[FORM] Error updating display_order:', error);
+          }
         }
       }
 
@@ -719,153 +875,48 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         {selectedFiles.length > 0 && (
           <div className="mt-4">
             <p className="text-xs text-gray-400 mb-2">Drag to reorder images</p>
-            <DragDropContext onDragEnd={handleDragEnd}>
-              <Droppable droppableId="files" direction="horizontal">
-                {(provided) => (
-                  <div
-                    {...provided.droppableProps}
-                    ref={provided.innerRef}
-                    className="flex flex-wrap gap-4"
-                  >
-                    {selectedFiles.map((file, index) => {
-                      if (!file.url) {
-                        console.log('[PREVIEW] File missing URL:', { id: file.id, name: file.name, type: file.type, sourceKey: file.sourceKey });
-                      }
-                      const draggableId = String(file.id);
-                      console.log('[DRAG] Rendering Draggable:', { draggableId, index, fileId: file.id });
-                      return (
-                        <Draggable key={file.id} draggableId={draggableId} index={index}>
-                          {(provided, snapshot) => (
-                            <div
-                              ref={provided.innerRef}
-                              {...provided.draggableProps}
-                              className={`relative group w-32 select-none ${snapshot.isDragging ? 'opacity-50 z-50' : ''}`}
-                              style={{
-                                ...provided.draggableProps.style,
-                                userSelect: 'none',
-                              }}
-                            >
-                              <div
-                                {...provided.dragHandleProps}
-                                className="absolute bottom-1 left-1 z-40 bg-gray-800 bg-opacity-90 text-white rounded p-1 cursor-grab active:cursor-grabbing hover:bg-gray-700"
-                                title="Drag to reorder"
-                              >
-                                <GripVertical className="w-4 h-4" />
-                              </div>
-
-                              {file.url ? (
-                                file.isVideo ? (
-                                  <div className="relative w-32 h-24 bg-gray-900 rounded flex items-center justify-center group cursor-pointer"
-                                       onClick={(e) => {
-                                         e.stopPropagation();
-                                         const video = document.createElement('video');
-                                         video.src = file.url!;
-                                         video.controls = true;
-                                         video.style.maxWidth = '90vw';
-                                         video.style.maxHeight = '90vh';
-                                         const modal = document.createElement('div');
-                                         modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
-                                         modal.onclick = () => modal.remove();
-                                         modal.appendChild(video);
-                                         document.body.appendChild(modal);
-                                         video.play();
-                                       }}>
-                                    <Play className="w-8 h-8 text-white opacity-70 group-hover:opacity-100 transition-opacity absolute z-10 pointer-events-none" />
-                                    <video
-                                      src={file.url}
-                                      className="absolute inset-0 w-full h-full object-cover rounded opacity-40 pointer-events-none"
-                                      muted
-                                      draggable={false}
-                                    />
-                                  </div>
-                                ) : (
-                                  <div
-                                    className="w-32 h-24 cursor-pointer"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      const publishedFiles = selectedFiles
-                                        .filter(f => f.url && f.uploadStatus === 'published')
-                                        .map(f => ({ url: f.url!, isVideo: f.isVideo }));
-                                      const clickedIndex = publishedFiles.findIndex(f => f.url === file.url);
-                                      setGalleryImages(publishedFiles);
-                                      setGalleryInitialIndex(clickedIndex >= 0 ? clickedIndex : 0);
-                                      setShowGallery(true);
-                                    }}
-                                  >
-                                    <img
-                                      src={file.url}
-                                      alt={file.name}
-                                      draggable={false}
-                                      className="w-full h-full object-cover rounded select-none pointer-events-none"
-                                    />
-                                  </div>
-                                )
-                              ) : (
-                                <div className="w-32 h-24 bg-gray-200 rounded flex flex-col items-center justify-center">
-                                  {file.uploadStatus === 'processing' ? (
-                                    <>
-                                      <Loader className="w-6 h-6 text-gray-500 animate-spin mb-1" />
-                                      <span className="text-xs text-gray-600">Processing...</span>
-                                    </>
-                                  ) : file.isVideo ? (
-                                    <>
-                                      <Play className="w-6 h-6 text-gray-500 mb-1" />
-                                      <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
-                                    </>
-                                  ) : (
-                                    <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
-                                  )}
-                                </div>
-                              )}
-
-                              {file.uploadStatus === 'pending' && (
-                                <div className="absolute top-1 left-1 bg-yellow-500 text-white text-xs px-2 py-0.5 rounded z-10">
-                                  Ready
-                                </div>
-                              )}
-                              {file.uploadStatus === 'uploading' && (
-                                <div className="absolute inset-0 bg-black bg-opacity-50 rounded flex items-center justify-center z-10">
-                                  <Loader className="w-6 h-6 text-white animate-spin" />
-                                </div>
-                              )}
-                              {file.uploadStatus === 'processing' && (
-                                <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs px-2 py-0.5 rounded z-10">
-                                  Processing...
-                                </div>
-                              )}
-                              {file.uploadStatus === 'published' && (
-                                <div className="absolute top-1 left-1 bg-green-500 text-white text-xs px-2 py-0.5 rounded z-10">
-                                  ✓ Ready
-                                </div>
-                              )}
-                              {file.uploadStatus === 'error' && (
-                                <div className="absolute inset-0 bg-red-500 bg-opacity-75 rounded flex items-center justify-center z-10">
-                                  <span className="text-white text-xs px-2 text-center">
-                                    {file.errorMessage || 'Error'}
-                                  </span>
-                                </div>
-                              )}
-
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeFile(file.id);
-                                }}
-                                className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-30 pointer-events-auto"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </div>
-                          )}
-                        </Draggable>
-                      );
-                    })}
-                    {provided.placeholder}
-                  </div>
-                )}
-              </Droppable>
-            </DragDropContext>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext
+                items={selectedFiles.map(f => f.id)}
+                strategy={horizontalListSortingStrategy}
+              >
+                <div className="flex flex-wrap gap-4">
+                  {selectedFiles.map((file) => (
+                    <SortableFileItem
+                      key={file.id}
+                      file={file}
+                      onRemove={removeFile}
+                      onImageClick={(file) => {
+                        const publishedFiles = selectedFiles
+                          .filter(f => f.url && f.uploadStatus === 'published')
+                          .map(f => ({ url: f.url!, isVideo: f.isVideo }));
+                        const clickedIndex = publishedFiles.findIndex(f => f.url === file.url);
+                        setGalleryImages(publishedFiles);
+                        setGalleryInitialIndex(clickedIndex >= 0 ? clickedIndex : 0);
+                        setShowGallery(true);
+                      }}
+                      onVideoClick={(file) => {
+                        const video = document.createElement('video');
+                        video.src = file.url!;
+                        video.controls = true;
+                        video.style.maxWidth = '90vw';
+                        video.style.maxHeight = '90vh';
+                        const modal = document.createElement('div');
+                        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
+                        modal.onclick = () => modal.remove();
+                        modal.appendChild(video);
+                        document.body.appendChild(modal);
+                        video.play();
+                      }}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
           </div>
         )}
       </div>

@@ -74,7 +74,7 @@ export default function Hero({ onGetStarted }: HeroProps) {
           <div className="relative">
             <div className="relative z-10 space-y-4">
               <img
-                src="/ChatGPT Image Dec 2, 2025, 09_12_26 AM.png"
+                src="/ChatGPT_Image_Mar_5,_2026,_08_32_56_AM.png"
                 alt="Website Under Construction"
                 className="rounded-2xl shadow-2xl w-full h-96 lg:h-[500px] object-contain bg-ironbound-grey-800"
               />

@@ -7,7 +7,6 @@ import AuctionFilters from './components/AuctionFilters';
 import AuctionGrid from './components/AuctionGrid';
 import AuctionDetail from './components/AuctionDetail';
 import AuthModal from './components/AuthModal';
-import CreateAuctionModal from './components/CreateAuctionModal';
 import UserProfile from './components/UserProfile';
 import AdminPanel from './components/AdminPanel';
 import Footer from './components/Footer';
@@ -56,6 +55,8 @@ function AppContent() {
       const path = window.location.pathname;
       const hash = window.location.hash;
 
+      console.log('handlePopState - path:', path, 'hash:', hash, 'user:', user?.email || 'none');
+
       if (path === '/reset-password' || hash === '#reset-password') {
         setCurrentView('password-reset');
       } else if (path.startsWith('/admin')) {
@@ -64,38 +65,49 @@ function AppContent() {
           // Parse admin sub-routes
           const adminPath = path.replace('/admin', '') || '/dashboard';
           const adminRoute = adminPath.substring(1) || 'dashboard';
-          
+
           const validAdminViews: AdminView[] = [
             'dashboard', 'auctions', 'create-event', 'edit-event', 'manage-lots',
             'create-lot', 'edit-lot', 'user-management', 'admin-management',
             'create-admin', 'create-auction', 'consigners', 'inventory', 'admin-recovery',
             'recently-removed'
           ];
-          
+
           if (validAdminViews.includes(adminRoute as AdminView)) {
             setAdminView(adminRoute as AdminView);
           } else {
             setAdminView('dashboard');
           }
         } else {
+          // User not authorized for admin - redirect to home
           setCurrentView('home');
+          window.history.replaceState({}, '', '/');
         }
       } else if (hash === '#admin') {
         if (isAdminUser(user)) {
           setCurrentView('admin');
           setAdminView('dashboard');
         } else {
+          // User not authorized for admin - redirect to home
           setCurrentView('home');
+          window.history.replaceState({}, '', '/');
         }
       } else if (path === '/profile' || hash === '#profile') {
         if (user) {
           setCurrentView('profile');
         } else {
+          // User not logged in - redirect to home
           setCurrentView('home');
+          window.history.replaceState({}, '', '/');
         }
       } else if (path === '/auctions' || hash === '#auctions') {
         setCurrentView('auctions');
+      } else if (path === '/' || path === '') {
+        // Explicitly handle root path
+        setCurrentView('home');
       } else {
+        // Unknown path - stay on current view but don't redirect
+        // This allows for future routes without breaking existing behavior
         setCurrentView('home');
       }
     };
@@ -104,21 +116,13 @@ function AppContent() {
     if (isInitialized) {
       handlePopState();
     }
-    
+
     // Listen for browser back/forward
     window.addEventListener('popstate', handlePopState);
-    
+
     return () => window.removeEventListener('popstate', handlePopState);
   }, [user, isInitialized]);
 
-  // Redirect to home when user logs out
-  useEffect(() => {
-    if (isInitialized && !user && currentView !== 'home') {
-      console.log('App: User logged out, redirecting to home from:', currentView);
-      setCurrentView('home');
-      window.history.pushState({}, '', '/');
-    }
-  }, [user, isInitialized]);
 
   useEffect(() => {
     const fetchAuctions = async () => {

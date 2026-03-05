@@ -134,66 +134,17 @@ export class InventoryService {
   }
 
   static async deleteItem(id: string): Promise<void> {
-    // Get all files associated with this item BEFORE deleting anything
-    const { data: files, error: filesError } = await supabase
+    console.log(`[INVENTORY] Deleting inventory item ${id}`);
+
+    // Mark all files as detached (soft delete for 30-day retention)
+    const { error: detachError } = await supabase
       .from('auction_files')
-      .select('source_key, asset_group_id')
-      .eq('item_id', id)
-      .eq('variant', 'source');
+      .update({ detached_at: new Date().toISOString() })
+      .eq('item_id', id);
 
-    if (filesError) {
-      console.error('[INVENTORY] Error fetching files for cleanup:', filesError);
+    if (detachError) {
+      console.error('[INVENTORY] Error marking files as detached:', detachError);
     }
-
-    console.log(`[INVENTORY] === Deleting item ${id} ===`);
-    console.log(`[INVENTORY] Found ${files?.length || 0} file(s) for item ${id}`);
-
-    // FIRST: Mark all files as detached (for "Recently Removed" feature)
-    if (files && files.length > 0) {
-      const { error: detachError } = await supabase
-        .from('auction_files')
-        .update({ detached_at: new Date().toISOString() })
-        .eq('item_id', id);
-
-      if (detachError) {
-        console.error('[INVENTORY] Error marking files as detached:', detachError);
-      } else {
-        console.log(`[INVENTORY] Marked ${files.length} file(s) as detached`);
-      }
-    }
-
-    // For each file, check if other items reference it BEFORE we delete anything
-    const filesToDelete: string[] = [];
-
-    if (files && files.length > 0) {
-      for (const file of files) {
-        try {
-          console.log(`[INVENTORY] Checking file: ${file.source_key}`);
-
-          // Files from IronDrive picker (source_key is set) are NEVER deleted from RAID
-          if (file.source_key) {
-            console.log(`[INVENTORY]   Decision: SKIP (IronDrive file, never delete from RAID)`);
-            continue;
-          }
-
-          // Check if any other items still reference this file (before deletion)
-          const refCount = await IronDriveService.getReferenceCount(file.source_key);
-          console.log(`[INVENTORY]   Reference count: ${refCount} (including this item)`);
-
-          if (refCount === 1) {
-            // Only this item references the file - safe to delete from RAID after DB deletion
-            console.log(`[INVENTORY]   Decision: DELETE from RAID (last reference)`);
-            filesToDelete.push(file.source_key);
-          } else {
-            console.log(`[INVENTORY]   Decision: KEEP (${refCount - 1} other item(s) still use this file)`);
-          }
-        } catch (error) {
-          console.error(`[INVENTORY] Error checking file ${file.source_key}:`, error);
-        }
-      }
-    }
-
-    console.log(`[INVENTORY] Files marked for RAID deletion: ${filesToDelete.length}`);
 
     // Delete the item (CASCADE will delete auction_files records)
     const { error } = await supabase
@@ -203,28 +154,7 @@ export class InventoryService {
 
     if (error) throw error;
 
-    console.log(`[INVENTORY] Item deleted from database`);
-
-    // Now delete physical files that were marked for deletion
-    if (filesToDelete.length > 0) {
-      console.log(`[INVENTORY] Deleting ${filesToDelete.length} orphaned file(s) from RAID`);
-
-      for (const file_key of filesToDelete) {
-        try {
-          console.log(`[INVENTORY]   Deleting from RAID: ${file_key}`);
-          await IronDriveService.deleteFilePhysical(file_key);
-          console.log(`[INVENTORY]   ✓ Successfully deleted from RAID: ${file_key}`);
-        } catch (error) {
-          console.error(`[INVENTORY]   ✗ Failed to delete from RAID: ${file_key}`, error);
-          // Continue with other files even if one fails
-        }
-      }
-      console.log(`[INVENTORY] RAID cleanup complete`);
-    } else {
-      console.log(`[INVENTORY] No files to delete from RAID`);
-    }
-
-    console.log(`[INVENTORY] === Item deletion complete ===`);
+    console.log(`[INVENTORY] Item deleted successfully`);
   }
 
   static async assignToEvent(inventoryId: string, eventId: string, lotNumber: string, saleOrder: number): Promise<void> {

@@ -27,10 +27,7 @@ export function useAuthProvider() {
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
-    // Set initialized immediately so app loads instantly
-    setIsInitialized(true);
-
-    // Check auth in the background
+    // Check auth first, then set initialized
     const initializeAuth = async () => {
       try {
         const currentUser = await AuthService.getCurrentUser();
@@ -38,6 +35,9 @@ export function useAuthProvider() {
       } catch (error) {
         console.error('useAuth: Auth initialization error', error);
         setUser(null);
+      } finally {
+        // Only mark as initialized after we've checked for user
+        setIsInitialized(true);
       }
     };
 

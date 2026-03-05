@@ -32,6 +32,9 @@ export class UploadHandler {
         item_id
       });
 
+      // Get the next display_order for this item (max + 1, or 0 if no files yet)
+      const nextDisplayOrder = await this.db.getNextDisplayOrder(item_id);
+
       const assetGroupId = crypto.randomUUID();
       const variants = await this.imageProcessor.processImage(req.file.buffer);
 
@@ -49,7 +52,8 @@ export class UploadHandler {
         {
           b2Key: sourceB2Key,
           width: variants.display.width,
-          height: variants.display.height
+          height: variants.display.height,
+          displayOrder: nextDisplayOrder
         }
       );
 
@@ -83,7 +87,8 @@ export class UploadHandler {
           {
             b2Key,
             width: data.width,
-            height: data.height
+            height: data.height,
+            displayOrder: nextDisplayOrder
           }
         );
 

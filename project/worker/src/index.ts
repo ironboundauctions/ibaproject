@@ -152,7 +152,8 @@ class MediaPublishingWorker {
   }
 
   private scheduleCleanup(): void {
-    const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
+    // TESTING MODE: Run cleanup every 2 minutes (was 24 hours)
+    const CLEANUP_INTERVAL = 2 * 60 * 1000;
 
     this.cleanupTimer = setInterval(async () => {
       if (!this.isShuttingDown) {
@@ -166,6 +167,7 @@ class MediaPublishingWorker {
       }
     }, CLEANUP_INTERVAL);
 
+    // TESTING MODE: Run initial cleanup after 10 seconds (was 60 seconds)
     setTimeout(async () => {
       try {
         logger.info('Running initial cleanup');
@@ -174,7 +176,7 @@ class MediaPublishingWorker {
       } catch (error) {
         logger.error('Initial cleanup failed', error as Error);
       }
-    }, 60000);
+    }, 10000);
   }
 
   private async processNextJob(): Promise<boolean> {

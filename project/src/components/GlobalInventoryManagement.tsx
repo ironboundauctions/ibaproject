@@ -27,7 +27,7 @@ export default function GlobalInventoryManagement() {
   const [galleryImages, setGalleryImages] = useState<string[]>([]);
   const [showGallery, setShowGallery] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
-  const [videoCountsByItemId, setVideoCountsByItemId] = useState<Record<string, number>>({});
+  const [fileCountsByItemId, setFileCountsByItemId] = useState<Record<string, number>>({});
   const [cdnThumbnailsByItemId, setCdnThumbnailsByItemId] = useState<Record<string, string>>({});
   const [advancedFilters, setAdvancedFilters] = useState<FilterState>({
     categories: [],
@@ -71,7 +71,7 @@ export default function GlobalInventoryManagement() {
           });
 
           console.log('[INVENTORY] File counts loaded:', fileCounts);
-          setVideoCountsByItemId(fileCounts);
+          setFileCountsByItemId(fileCounts);
         }
 
         // Fetch thumbnails separately (thumb variant for display)
@@ -625,7 +625,7 @@ export default function GlobalInventoryManagement() {
                             );
                           })()}
                           {(() => {
-                            const fileCount = videoCountsByItemId[item.id] || 0;
+                            const fileCount = fileCountsByItemId[item.id] || 0;
 
                             if (fileCount > 0) {
                               return (
