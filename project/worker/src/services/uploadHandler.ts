@@ -37,6 +37,34 @@ export class UploadHandler {
 
       const uploadResults = [];
 
+      // Upload source variant (original file, converted to WebP)
+      const sourceB2Key = `assets/${assetGroupId}/source.webp`;
+      const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
+      await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
+
+      const sourceVariantId = await this.db.upsertVariant(
+        assetGroupId,
+        'source',
+        sourceCdnUrl,
+        {
+          b2Key: sourceB2Key,
+          width: variants.display.width,
+          height: variants.display.height
+        }
+      );
+
+      await this.db.setVariantItemAndMetadata(sourceVariantId, item_id, req.file.originalname, variants.display.buffer.length, 'image/webp');
+
+      uploadResults.push({
+        variant: 'source',
+        b2_key: sourceB2Key,
+        cdn_url: sourceCdnUrl,
+        id: sourceVariantId,
+        width: variants.display.width,
+        height: variants.display.height
+      });
+
+      // Upload display and thumb variants
       const variantEntries = [
         { name: 'thumb', data: variants.thumb },
         { name: 'display', data: variants.display }

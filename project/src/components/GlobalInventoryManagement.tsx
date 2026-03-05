@@ -82,7 +82,7 @@ export default function GlobalInventoryManagement() {
           .eq('variant', 'thumb')
           .eq('published_status', 'published')
           .is('detached_at', null)
-          .order('created_at', { ascending: true });
+          .order('display_order', { ascending: true });
 
         if (!thumbError && thumbFiles) {
           const thumbnails: Record<string, string> = {};
@@ -222,7 +222,7 @@ export default function GlobalInventoryManagement() {
     try {
       const { data: files, error } = await supabase
         .from('auction_files')
-        .select('cdn_url, mime_type, variant')
+        .select('cdn_url, mime_type, variant, asset_group_id')
         .eq('item_id', item.id)
         .eq('published_status', 'published')
         .is('detached_at', null)
@@ -231,10 +231,31 @@ export default function GlobalInventoryManagement() {
 
       if (error) throw error;
 
-      const media = (files || []).map(file => ({
-        url: file.cdn_url,
-        isVideo: file.mime_type?.startsWith('video/') || false
-      }));
+      // Group files by asset_group_id to handle video + thumbnail pairs
+      const assetGroups = new Map<string, any[]>();
+      (files || []).forEach(file => {
+        const groupId = file.asset_group_id || file.cdn_url;
+        if (!assetGroups.has(groupId)) {
+          assetGroups.set(groupId, []);
+        }
+        assetGroups.get(groupId)!.push(file);
+      });
+
+      // For each group, prefer video over display variant
+      const media: { url: string; isVideo: boolean }[] = [];
+      assetGroups.forEach(groupFiles => {
+        const videoFile = groupFiles.find(f => f.variant === 'video');
+        if (videoFile) {
+          // If there's a video, only show the video (not the thumbnail)
+          media.push({ url: videoFile.cdn_url, isVideo: true });
+        } else {
+          // Otherwise show the display variant (image)
+          const displayFile = groupFiles.find(f => f.variant === 'display');
+          if (displayFile) {
+            media.push({ url: displayFile.cdn_url, isVideo: false });
+          }
+        }
+      });
 
       // Fallback to legacy image_url if no files found
       if (media.length === 0 && item.image_url) {
@@ -415,6 +436,8 @@ export default function GlobalInventoryManagement() {
           onCancel={async () => {
             setShowForm(false);
             setSelectedItem(null);
+            // Small delay to ensure DB updates are complete
+            await new Promise(resolve => setTimeout(resolve, 1000));
             await fetchData();
           }}
         />

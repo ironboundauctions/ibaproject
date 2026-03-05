@@ -303,9 +303,9 @@ export class InventoryService {
   }>> {
     const { data, error } = await supabase
       .from('auction_files')
-      .select('id, download_url, thumb_url, display_url, publish_status, mime_type, name, file_type')
+      .select('id, cdn_url, mime_type, original_name, published_status, variant')
       .eq('item_id', itemId)
-      .is('deleted_at', null)
+      .is('detached_at', null)
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -315,12 +315,12 @@ export class InventoryService {
 
     return (data || []).map(file => ({
       id: file.id,
-      url: file.display_url || file.thumb_url || file.download_url || '',
-      thumbUrl: file.thumb_url || undefined,
-      displayUrl: file.display_url || undefined,
-      isVideo: file.file_type === 'video' || file.mime_type?.startsWith('video/') || false,
-      publishStatus: file.publish_status || undefined,
-      name: file.name || undefined
+      url: file.cdn_url || '',
+      thumbUrl: undefined,
+      displayUrl: file.cdn_url || undefined,
+      isVideo: file.mime_type?.startsWith('video/') || false,
+      publishStatus: file.published_status || undefined,
+      name: file.original_name || undefined
     }));
   }
 

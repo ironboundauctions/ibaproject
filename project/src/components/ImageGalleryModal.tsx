@@ -188,7 +188,7 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
                 }}
                 onClick={() => !isFullscreen && handleImageClick()}
                 onError={(e) => {
-                  e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
+                  console.error('Image failed to load:', currentItem.url);
                 }}
               />
             )}

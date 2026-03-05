@@ -86,7 +86,7 @@ export default function InventoryItemForm({ item, eventId = '', consigners, onSu
             console.log('[VIDEO] Loaded existing videos:', videoFiles);
             videoFiles.forEach((video, index) => {
               // Only show videos with published CDN URLs
-              if (video.cdn_url && video.publish_status === 'published') {
+              if (video.cdn_url && video.published_status === 'published') {
                 existingImages.push({
                   id: `existing-video-${video.id || index}-${Date.now()}`,
                   type: 'irondrive',

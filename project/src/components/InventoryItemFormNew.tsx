@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { X, Upload, Loader, ExternalLink, Play } from 'lucide-react';
+import { X, Upload, Loader, ExternalLink, Play, GripVertical } from 'lucide-react';
+import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
 import { InventoryItem, CreateInventoryItemData } from '../services/inventoryService';
 import { Consigner } from '../types/consigner';
 import { FileUploadService } from '../services/fileUploadService';
 import { supabase } from '../lib/supabase';
 import { EQUIPMENT_CATEGORIES } from '../utils/formatters';
+import ImageGalleryModal from './ImageGalleryModal';
 
 interface Props {
   item?: InventoryItem | null;
@@ -26,6 +28,7 @@ interface SelectedFile {
   uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
   assetGroupId?: string;
   errorMessage?: string;
+  displayOrder?: number;
 }
 
 function guessMimeType(filename: string): string {
@@ -73,6 +76,9 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [error, setError] = useState('');
   const [processingIronDriveFiles, setProcessingIronDriveFiles] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
+  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; isVideo: boolean }>>([]);
+  const [galleryInitialIndex, setGalleryInitialIndex] = useState(0);
 
   useEffect(() => {
     if (item) {
@@ -99,7 +105,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         }
       });
     };
-  }, [selectedFiles]);
+  }, []);
 
   const handleIronDrivePickerClick = () => {
     const returnUrl = encodeURIComponent(window.location.origin);
@@ -120,6 +126,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         .eq('item_id', item.id)
         .in('variant', ['display', 'thumb', 'source', 'video'])
         .is('detached_at', null)
+        .order('display_order', { ascending: true })
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -140,7 +147,11 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           const sourceFile = group.find(f => f.variant === 'source');
           const primaryFile = displayFile || videoFile || thumbFile || sourceFile || group[0];
 
-          const previewUrl = displayFile?.cdn_url || videoFile?.cdn_url || thumbFile?.cdn_url;
+          // Determine if this is a video by checking if videoFile variant exists or source mime type
+          const isVideo = !!videoFile || sourceFile?.mime_type?.startsWith('video/') || false;
+
+          // For videos, use video.mp4 URL, otherwise use display/thumb
+          const previewUrl = isVideo ? (videoFile?.cdn_url || thumbFile?.cdn_url) : (displayFile?.cdn_url || thumbFile?.cdn_url);
 
           console.log('[LOAD] Building file object:', {
             assetGroupId: primaryFile.asset_group_id,
@@ -149,6 +160,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             thumbCdnUrl: thumbFile?.cdn_url,
             sourceKey: sourceFile?.source_key,
             previewUrl,
+            isVideo,
             publishedStatus: primaryFile.published_status
           });
 
@@ -159,13 +171,14 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             type: (sourceFile?.source_key ? 'irondrive' : 'pc') as 'pc' | 'irondrive',
             url: previewUrl,
             name: sourceFile?.original_name || primaryFile.original_name || 'file',
-            isVideo: primaryFile.mime_type?.startsWith('video/') || false,
+            isVideo,
             sourceKey: sourceFile?.source_key,
-            mimeType: primaryFile.mime_type,
+            mimeType: sourceFile?.mime_type || primaryFile.mime_type,
             uploadStatus: (primaryFile.published_status === 'published' ? 'published' :
                          primaryFile.published_status === 'processing' ? 'processing' :
                          primaryFile.published_status === 'pending' ? 'processing' : 'uploaded') as any,
-            assetGroupId: primaryFile.asset_group_id
+            assetGroupId: primaryFile.asset_group_id,
+            displayOrder: primaryFile.display_order || 0
           };
         });
         console.log('[LOAD] Original asset group IDs:', Array.from(originalAssetGroupIds));
@@ -315,6 +328,21 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     });
   };
 
+  const handleDragEnd = (result: DropResult) => {
+    console.log('[DRAG] handleDragEnd called:', result);
+    if (!result.destination) {
+      console.log('[DRAG] No destination, drag cancelled');
+      return;
+    }
+
+    const items = Array.from(selectedFiles);
+    const [reorderedItem] = items.splice(result.source.index, 1);
+    items.splice(result.destination.index, 0, reorderedItem);
+
+    console.log('[DRAG] Reordered items:', items.map(f => f.id));
+    setSelectedFiles(items);
+  };
+
   const uploadPCFiles = async (filesToUpload: SelectedFile[], itemId: string) => {
     setUploadProgress({ current: 0, total: filesToUpload.length });
 
@@ -383,7 +411,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         reserve_price: parseFloat(formData.reserve_price) || undefined,
         estimated_value_low: parseFloat(formData.estimated_value_low) || undefined,
         estimated_value_high: parseFloat(formData.estimated_value_high) || undefined,
-        image_url: 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg',
+        image_url: '',
         consigner_id: consigner?.id,
         condition: formData.condition,
         notes: formData.additional_description
@@ -406,7 +434,10 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       if (pendingIronDriveFiles.length > 0) {
         setSubmitProgress(`Processing ${pendingIronDriveFiles.length} IronDrive file${pendingIronDriveFiles.length > 1 ? 's' : ''}...`);
 
-        for (const file of pendingIronDriveFiles) {
+        for (let i = 0; i < pendingIronDriveFiles.length; i++) {
+          const file = pendingIronDriveFiles[i];
+          const displayOrder = selectedFiles.findIndex(f => f.id === file.id);
+
           const { error: dbError } = await supabase.from('auction_files').insert({
             item_id: savedItemId,
             asset_group_id: file.assetGroupId!,
@@ -414,7 +445,8 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             source_key: file.sourceKey!,
             original_name: file.name,
             mime_type: file.mimeType!,
-            published_status: 'pending'
+            published_status: 'pending',
+            display_order: displayOrder
           });
 
           if (dbError) {
@@ -454,6 +486,18 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         }
       }
 
+      // Update display_order for all existing files
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        if (file.assetGroupId) {
+          await supabase
+            .from('auction_files')
+            .update({ display_order: i })
+            .eq('item_id', savedItemId)
+            .eq('asset_group_id', file.assetGroupId);
+        }
+      }
+
       await new Promise(resolve => setTimeout(resolve, 500));
       onCancel();
     } catch (error) {
@@ -467,6 +511,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
   };
 
   return (
+    <>
     <form onSubmit={handleSubmit} className="space-y-6">
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
@@ -673,100 +718,154 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
         {selectedFiles.length > 0 && (
           <div className="mt-4">
-            <div className="grid grid-cols-4 gap-4">
-              {selectedFiles.map(file => {
-                if (!file.url) {
-                  console.log('[PREVIEW] File missing URL:', { id: file.id, name: file.name, type: file.type, sourceKey: file.sourceKey });
-                }
-                return (
-                  <div key={file.id} className="relative group">
-                    {file.url ? (
-                      file.isVideo ? (
-                        <div className="relative w-full h-24 bg-gray-900 rounded flex items-center justify-center group cursor-pointer"
-                             onClick={() => {
-                               const video = document.createElement('video');
-                               video.src = file.url!;
-                               video.controls = true;
-                               video.style.maxWidth = '90vw';
-                               video.style.maxHeight = '90vh';
-                               const modal = document.createElement('div');
-                               modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
-                               modal.onclick = () => modal.remove();
-                               modal.appendChild(video);
-                               document.body.appendChild(modal);
-                               video.play();
-                             }}>
-                          <Play className="w-8 h-8 text-white opacity-70 group-hover:opacity-100 transition-opacity absolute z-10" />
-                          <video
-                            src={file.url}
-                            className="absolute inset-0 w-full h-full object-cover rounded opacity-40"
-                            muted
-                          />
-                        </div>
-                      ) : (
-                        <img
-                          src={file.url}
-                          alt={file.name}
-                          className="w-full h-24 object-cover rounded"
-                        />
-                      )
-                    ) : (
-                      <div className="w-full h-24 bg-gray-200 rounded flex flex-col items-center justify-center">
-                        {file.uploadStatus === 'processing' ? (
-                          <>
-                            <Loader className="w-6 h-6 text-gray-500 animate-spin mb-1" />
-                            <span className="text-xs text-gray-600">Processing...</span>
-                          </>
-                        ) : file.isVideo ? (
-                          <>
-                            <Play className="w-6 h-6 text-gray-500 mb-1" />
-                            <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
-                          </>
-                        ) : (
-                          <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
-                        )}
-                      </div>
-                    )}
-
-                  {file.uploadStatus === 'pending' && (
-                    <div className="absolute top-1 left-1 bg-yellow-500 text-white text-xs px-2 py-0.5 rounded">
-                      Ready
-                    </div>
-                  )}
-                  {file.uploadStatus === 'uploading' && (
-                    <div className="absolute inset-0 bg-black bg-opacity-50 rounded flex items-center justify-center">
-                      <Loader className="w-6 h-6 text-white animate-spin" />
-                    </div>
-                  )}
-                  {file.uploadStatus === 'processing' && (
-                    <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs px-2 py-0.5 rounded">
-                      Processing...
-                    </div>
-                  )}
-                  {file.uploadStatus === 'published' && (
-                    <div className="absolute top-1 left-1 bg-green-500 text-white text-xs px-2 py-0.5 rounded">
-                      ✓ Ready
-                    </div>
-                  )}
-                  {file.uploadStatus === 'error' && (
-                    <div className="absolute inset-0 bg-red-500 bg-opacity-75 rounded flex items-center justify-center">
-                      <span className="text-white text-xs px-2 text-center">
-                        {file.errorMessage || 'Error'}
-                      </span>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => removeFile(file.id)}
-                    className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+            <p className="text-xs text-gray-400 mb-2">Drag to reorder images</p>
+            <DragDropContext onDragEnd={handleDragEnd}>
+              <Droppable droppableId="files" direction="horizontal">
+                {(provided) => (
+                  <div
+                    {...provided.droppableProps}
+                    ref={provided.innerRef}
+                    className="flex flex-wrap gap-4"
                   >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                );
-              })}
-            </div>
+                    {selectedFiles.map((file, index) => {
+                      if (!file.url) {
+                        console.log('[PREVIEW] File missing URL:', { id: file.id, name: file.name, type: file.type, sourceKey: file.sourceKey });
+                      }
+                      const draggableId = String(file.id);
+                      console.log('[DRAG] Rendering Draggable:', { draggableId, index, fileId: file.id });
+                      return (
+                        <Draggable key={file.id} draggableId={draggableId} index={index}>
+                          {(provided, snapshot) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              className={`relative group w-32 select-none ${snapshot.isDragging ? 'opacity-50 z-50' : ''}`}
+                              style={{
+                                ...provided.draggableProps.style,
+                                userSelect: 'none',
+                              }}
+                            >
+                              <div
+                                {...provided.dragHandleProps}
+                                className="absolute bottom-1 left-1 z-40 bg-gray-800 bg-opacity-90 text-white rounded p-1 cursor-grab active:cursor-grabbing hover:bg-gray-700"
+                                title="Drag to reorder"
+                              >
+                                <GripVertical className="w-4 h-4" />
+                              </div>
+
+                              {file.url ? (
+                                file.isVideo ? (
+                                  <div className="relative w-32 h-24 bg-gray-900 rounded flex items-center justify-center group cursor-pointer"
+                                       onClick={(e) => {
+                                         e.stopPropagation();
+                                         const video = document.createElement('video');
+                                         video.src = file.url!;
+                                         video.controls = true;
+                                         video.style.maxWidth = '90vw';
+                                         video.style.maxHeight = '90vh';
+                                         const modal = document.createElement('div');
+                                         modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);display:flex;align-items:center;justify-content:center;z-index:9999;';
+                                         modal.onclick = () => modal.remove();
+                                         modal.appendChild(video);
+                                         document.body.appendChild(modal);
+                                         video.play();
+                                       }}>
+                                    <Play className="w-8 h-8 text-white opacity-70 group-hover:opacity-100 transition-opacity absolute z-10 pointer-events-none" />
+                                    <video
+                                      src={file.url}
+                                      className="absolute inset-0 w-full h-full object-cover rounded opacity-40 pointer-events-none"
+                                      muted
+                                      draggable={false}
+                                    />
+                                  </div>
+                                ) : (
+                                  <div
+                                    className="w-32 h-24 cursor-pointer"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const publishedFiles = selectedFiles
+                                        .filter(f => f.url && f.uploadStatus === 'published')
+                                        .map(f => ({ url: f.url!, isVideo: f.isVideo }));
+                                      const clickedIndex = publishedFiles.findIndex(f => f.url === file.url);
+                                      setGalleryImages(publishedFiles);
+                                      setGalleryInitialIndex(clickedIndex >= 0 ? clickedIndex : 0);
+                                      setShowGallery(true);
+                                    }}
+                                  >
+                                    <img
+                                      src={file.url}
+                                      alt={file.name}
+                                      draggable={false}
+                                      className="w-full h-full object-cover rounded select-none pointer-events-none"
+                                    />
+                                  </div>
+                                )
+                              ) : (
+                                <div className="w-32 h-24 bg-gray-200 rounded flex flex-col items-center justify-center">
+                                  {file.uploadStatus === 'processing' ? (
+                                    <>
+                                      <Loader className="w-6 h-6 text-gray-500 animate-spin mb-1" />
+                                      <span className="text-xs text-gray-600">Processing...</span>
+                                    </>
+                                  ) : file.isVideo ? (
+                                    <>
+                                      <Play className="w-6 h-6 text-gray-500 mb-1" />
+                                      <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-xs text-gray-500 truncate px-2">{file.name}</span>
+                                  )}
+                                </div>
+                              )}
+
+                              {file.uploadStatus === 'pending' && (
+                                <div className="absolute top-1 left-1 bg-yellow-500 text-white text-xs px-2 py-0.5 rounded z-10">
+                                  Ready
+                                </div>
+                              )}
+                              {file.uploadStatus === 'uploading' && (
+                                <div className="absolute inset-0 bg-black bg-opacity-50 rounded flex items-center justify-center z-10">
+                                  <Loader className="w-6 h-6 text-white animate-spin" />
+                                </div>
+                              )}
+                              {file.uploadStatus === 'processing' && (
+                                <div className="absolute top-1 left-1 bg-blue-500 text-white text-xs px-2 py-0.5 rounded z-10">
+                                  Processing...
+                                </div>
+                              )}
+                              {file.uploadStatus === 'published' && (
+                                <div className="absolute top-1 left-1 bg-green-500 text-white text-xs px-2 py-0.5 rounded z-10">
+                                  ✓ Ready
+                                </div>
+                              )}
+                              {file.uploadStatus === 'error' && (
+                                <div className="absolute inset-0 bg-red-500 bg-opacity-75 rounded flex items-center justify-center z-10">
+                                  <span className="text-white text-xs px-2 text-center">
+                                    {file.errorMessage || 'Error'}
+                                  </span>
+                                </div>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeFile(file.id);
+                                }}
+                                className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity z-30 pointer-events-auto"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
+                        </Draggable>
+                      );
+                    })}
+                    {provided.placeholder}
+                  </div>
+                )}
+              </Droppable>
+            </DragDropContext>
           </div>
         )}
       </div>
@@ -821,5 +920,14 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </button>
       </div>
     </form>
+
+    {showGallery && (
+      <ImageGalleryModal
+        images={galleryImages}
+        initialIndex={galleryInitialIndex}
+        onClose={() => setShowGallery(false)}
+      />
+    )}
+    </>
   );
 }
