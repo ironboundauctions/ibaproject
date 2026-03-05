@@ -44,23 +44,29 @@ export function RecentlyRemovedItems() {
 
       const itemsWithFiles = await Promise.all(
         (data || []).map(async (item) => {
+          // Get first thumb for display
           const { data: files } = await supabase
             .from('auction_files')
-            .select('cdn_url, published_status')
+            .select('cdn_url, published_status, detached_at')
             .eq('item_id', item.id)
             .eq('variant', 'thumb')
+            .is('detached_at', null)
             .limit(1)
             .maybeSingle();
 
-          const { count } = await supabase
+          // Count unique asset groups (ALL files, including detached ones)
+          // When item is deleted, show total file count including individually-removed files
+          const { data: assetGroups } = await supabase
             .from('auction_files')
-            .select('*', { count: 'exact', head: true })
+            .select('asset_group_id')
             .eq('item_id', item.id)
-            .eq('variant', 'thumb');
+            .eq('variant', 'source');
+
+          const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
 
           return {
             ...item,
-            file_count: count || 0,
+            file_count: uniqueAssetGroups.size,
             thumbnail_url: files?.published_status === 'published' ? files.cdn_url : null
           };
         })
@@ -75,18 +81,6 @@ export function RecentlyRemovedItems() {
     }
   };
 
-  const calculateDaysRemaining = (deletedAt: string): number => {
-    const deleted = new Date(deletedAt);
-    const deletionDate = new Date(deleted);
-    deletionDate.setDate(deletionDate.getDate() + 30);
-
-    const now = new Date();
-    const diffMs = deletionDate.getTime() - now.getTime();
-    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-
-    return Math.max(0, diffDays);
-  };
-
   const formatDate = (dateString: string): string => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', {
@@ -99,7 +93,7 @@ export function RecentlyRemovedItems() {
   };
 
   const handleRestore = async (item: RemovedItem) => {
-    if (!confirm(`Restore item "${item.title}"?\n\nThis will restore the item record. Some attached files may be missing if they were manually deleted.`)) {
+    if (!confirm(`Restore item "${item.title}"?\n\nThis will restore the item to Global Inventory with its attached files.\n\nNote: Files that were individually removed before item deletion will NOT be restored.`)) {
       return;
     }
 
@@ -111,6 +105,7 @@ export function RecentlyRemovedItems() {
 
       if (error) throw error;
 
+      alert('Item restored successfully!');
       await fetchRemovedItems();
     } catch (err) {
       console.error('[RecentlyRemovedItems] Restore error:', err);
@@ -138,6 +133,42 @@ Type "DELETE" to confirm:`;
     }
 
     try {
+      // First, get all asset groups for this item
+      const { data: assetGroups } = await supabase
+        .from('auction_files')
+        .select('asset_group_id')
+        .eq('item_id', item.id)
+        .eq('variant', 'source');
+
+      const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
+
+      // Delete each asset group from B2 via worker
+      const workerUrl = import.meta.env.VITE_WORKER_URL;
+      if (workerUrl && uniqueAssetGroups.size > 0) {
+        for (const assetGroupId of uniqueAssetGroups) {
+          try {
+            await fetch(`${workerUrl}/api/delete-asset-group`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ assetGroupId }),
+            });
+          } catch (err) {
+            console.error('Failed to delete asset group from B2:', assetGroupId, err);
+          }
+        }
+      }
+
+      // Delete all auction_files records for this item
+      const { error: filesError } = await supabase
+        .from('auction_files')
+        .delete()
+        .eq('item_id', item.id);
+
+      if (filesError) {
+        console.error('Error deleting files:', filesError);
+      }
+
+      // Delete the item
       const { error } = await supabase
         .from('inventory_items')
         .delete()
@@ -145,7 +176,7 @@ Type "DELETE" to confirm:`;
 
       if (error) throw error;
 
-      alert('Item permanently deleted. Files and B2 cleanup will occur automatically.');
+      alert('Item and all associated files permanently deleted from database and B2.');
       await fetchRemovedItems();
     } catch (err) {
       console.error('[RecentlyRemovedItems] Delete error:', err);
@@ -185,20 +216,17 @@ Type "DELETE" to confirm:`;
       </div>
 
       {items.length === 0 ? (
-        <p className="text-gray-600">No recently removed items</p>
+        <p className="text-gray-600">No removed items. Items removed from Global Inventory will appear here.</p>
       ) : (
         <div className="space-y-4">
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
             <p className="text-sm text-blue-800">
-              Items are automatically deleted after 30 days. You can restore them during this period.
+              <strong>Info:</strong> Items remain here until you permanently delete them. Click "Delete Now" to remove from database and B2 storage.
             </p>
           </div>
 
           <div className="space-y-2">
             {items.map((item) => {
-              const daysRemaining = calculateDaysRemaining(item.deleted_at);
-              const isUrgent = daysRemaining <= 7;
-
               return (
                 <div
                   key={item.id}
@@ -232,43 +260,29 @@ Type "DELETE" to confirm:`;
                             </p>
 
                             <p className="text-sm text-gray-500">
-                              {item.file_count} file{item.file_count !== 1 ? 's' : ''} • Deleted: {formatDate(item.deleted_at)}
+                              {item.file_count} file{item.file_count !== 1 ? 's' : ''} • Removed: {formatDate(item.deleted_at)}
                             </p>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <span
-                              className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${
-                                isUrgent
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-yellow-100 text-yellow-800'
-                              }`}
-                            >
-                              {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'}
-                            </span>
-                          </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleRestore(item)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                            title="Restore item to Global Inventory"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                            Restore
+                          </button>
 
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleRestore(item)}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-                              title="Restore item"
-                            >
-                              <RotateCcw className="w-4 h-4" />
-                              Restore
-                            </button>
-
-                            <button
-                              onClick={() => handlePermanentDelete(item)}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                              title="Permanently delete item"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                              Delete Now
-                            </button>
-                          </div>
+                          <button
+                            onClick={() => handlePermanentDelete(item)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+                            title="Permanently delete from database and B2"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                            Delete Now
+                          </button>
                         </div>
                       </div>
                     </div>

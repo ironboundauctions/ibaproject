@@ -134,27 +134,17 @@ export class InventoryService {
   }
 
   static async deleteItem(id: string): Promise<void> {
-    console.log(`[INVENTORY] Deleting inventory item ${id}`);
+    console.log(`[INVENTORY] Soft-deleting inventory item ${id}`);
 
-    // Mark all files as detached (soft delete for 30-day retention)
-    const { error: detachError } = await supabase
-      .from('auction_files')
-      .update({ detached_at: new Date().toISOString() })
-      .eq('item_id', id);
-
-    if (detachError) {
-      console.error('[INVENTORY] Error marking files as detached:', detachError);
-    }
-
-    // Delete the item (CASCADE will delete auction_files records)
+    // Soft delete the item (files remain attached so the item stays complete)
     const { error } = await supabase
       .from('inventory_items')
-      .delete()
+      .update({ deleted_at: new Date().toISOString() })
       .eq('id', id);
 
     if (error) throw error;
 
-    console.log(`[INVENTORY] Item deleted successfully`);
+    console.log(`[INVENTORY] Item soft-deleted successfully with all files intact.`);
   }
 
   static async assignToEvent(inventoryId: string, eventId: string, lotNumber: string, saleOrder: number): Promise<void> {
@@ -276,6 +266,42 @@ export class InventoryService {
     try {
       console.log('[INVENTORY] Permanently deleting item:', itemId);
 
+      // Get all asset groups for B2 deletion
+      const { data: assetGroups } = await supabase
+        .from('auction_files')
+        .select('asset_group_id')
+        .eq('item_id', itemId)
+        .eq('variant', 'source');
+
+      const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
+
+      // Delete from B2 via worker
+      const workerUrl = import.meta.env.VITE_WORKER_URL;
+      if (workerUrl && uniqueAssetGroups.size > 0) {
+        for (const assetGroupId of uniqueAssetGroups) {
+          try {
+            await fetch(`${workerUrl}/api/delete-asset-group`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ assetGroupId }),
+            });
+          } catch (err) {
+            console.error('[INVENTORY] Failed to delete asset group from B2:', assetGroupId, err);
+          }
+        }
+      }
+
+      // Delete all auction_files records for this item
+      const { error: filesError } = await supabase
+        .from('auction_files')
+        .delete()
+        .eq('item_id', itemId);
+
+      if (filesError) {
+        console.error('[INVENTORY] Error deleting files:', filesError);
+      }
+
+      // Delete the item
       const { error } = await supabase
         .from('inventory_items')
         .delete()
@@ -283,7 +309,7 @@ export class InventoryService {
 
       if (error) throw error;
 
-      console.log('[INVENTORY] Item permanently deleted. Associated files and B2 cleanup will occur automatically.');
+      console.log('[INVENTORY] Item permanently deleted with all files from database and B2.');
     } catch (error) {
       console.error('[INVENTORY] Failed to permanently delete item:', error);
       throw error;

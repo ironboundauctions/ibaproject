@@ -20,6 +20,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { InventoryItem, CreateInventoryItemData } from '../services/inventoryService';
 import { Consigner } from '../types/consigner';
 import { FileUploadService } from '../services/fileUploadService';
+import { IronDriveService } from '../services/ironDriveService';
 import { supabase } from '../lib/supabase';
 import { EQUIPMENT_CATEGORIES } from '../utils/formatters';
 import ImageGalleryModal from './ImageGalleryModal';
@@ -462,6 +463,24 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
   };
 
   const removeFile = async (id: string) => {
+    const fileToRemove = selectedFiles.find(f => f.id === id);
+
+    // If file has assetGroupId, it's already uploaded - mark as detached in database
+    if (fileToRemove?.assetGroupId) {
+      try {
+        const result = await IronDriveService.deleteFile(fileToRemove.assetGroupId, item?.id);
+        if (!result.success) {
+          alert(`Failed to remove file: ${result.error}`);
+          return;
+        }
+      } catch (error) {
+        console.error('[RemoveFile] Error:', error);
+        alert('Failed to remove file from database');
+        return;
+      }
+    }
+
+    // Remove from local state
     setSelectedFiles(prev => {
       const file = prev.find(f => f.id === id);
       if (file?.url && file.file) {
@@ -627,13 +646,18 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         console.log('[CLEANUP] Files removed by user:', assetGroupsToDetach);
 
         if (assetGroupsToDetach.length > 0) {
-          await supabase
+          const { data, error } = await supabase
             .from('auction_files')
             .update({ detached_at: new Date().toISOString() })
             .eq('item_id', item.id)
             .in('asset_group_id', assetGroupsToDetach);
 
-          console.log('[FORM] Marked removed files as detached for cleanup');
+          if (error) {
+            console.error('[FORM] Error marking files as detached:', error);
+            throw new Error(`Failed to mark files as removed: ${error.message}`);
+          }
+
+          console.log('[FORM] Marked removed files as detached for cleanup:', assetGroupsToDetach);
         }
       }
 
