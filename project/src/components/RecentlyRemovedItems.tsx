@@ -133,7 +133,6 @@ Type "DELETE" to confirm:`;
     }
 
     try {
-      // First, get all asset groups for this item
       const { data: assetGroups } = await supabase
         .from('auction_files')
         .select('asset_group_id')
@@ -142,7 +141,6 @@ Type "DELETE" to confirm:`;
 
       const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
 
-      // CRITICAL: Detach all files first so the worker can delete them
       const { error: detachError } = await supabase
         .from('auction_files')
         .update({ detached_at: new Date().toISOString() })
@@ -154,7 +152,6 @@ Type "DELETE" to confirm:`;
         throw new Error('Failed to detach files before deletion');
       }
 
-      // Delete each asset group from B2 via worker
       const workerUrl = import.meta.env.VITE_WORKER_URL;
       if (workerUrl && uniqueAssetGroups.size > 0) {
         for (const assetGroupId of uniqueAssetGroups) {
@@ -177,18 +174,6 @@ Type "DELETE" to confirm:`;
         }
       }
 
-      // Delete all auction_files records for this item
-      const { error: filesError } = await supabase
-        .from('auction_files')
-        .delete()
-        .eq('item_id', item.id);
-
-      if (filesError) {
-        console.error('[RecentlyRemovedItems] Error deleting file records:', filesError);
-        throw filesError;
-      }
-
-      // Delete the item
       const { error } = await supabase
         .from('inventory_items')
         .delete()
@@ -196,7 +181,7 @@ Type "DELETE" to confirm:`;
 
       if (error) throw error;
 
-      alert('Item and all associated files permanently deleted from database and B2.');
+      alert('Item and all files permanently deleted from database and B2.');
       await fetchRemovedItems();
     } catch (err) {
       console.error('[RecentlyRemovedItems] Delete error:', err);

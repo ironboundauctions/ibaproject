@@ -1,183 +1,47 @@
-# Fresh Testing Checklist
+# Fresh Test Setup - Complete Cleanup
 
-After cleaning up all test data, follow this checklist to verify IronDrive integration works correctly.
+This guide will help you completely wipe all test data and start fresh to properly test the deletion fix.
 
-## Pre-Test Setup
+## Step 1: Clean B2 Bucket (Manual)
 
-1. **Clean Database**
-   - Run `CLEANUP_ALL_TEST_DATA.sql` in Supabase SQL Editor
-   - Verify all inventory items are deleted
-   - Verify all auction_files are soft-deleted or removed
-
-2. **Clean B2 Bucket** (Optional, if you want fully fresh)
-   - Go to Backblaze B2 console
-   - Delete all files in `IBA-Lot-Media/assets/` folder
-   - Or keep them - the system will just create new ones
-
-3. **Verify Worker is Running**
-   - Check Railway logs for the worker
-   - Worker should be polling for jobs every 10 seconds
-
-## Test 1: Create New Item with IronDrive Images
-
-### Steps:
-1. Go to Admin → Global Inventory
-2. Click "Add New Item"
-3. Fill in basic details (inventory number, title)
-4. Click "Pick from IronDrive"
-5. Select 2-3 images from IronDrive
-6. **Check Form Behavior:**
-   - [ ] Images should show as "Ready" with green checkmark
-   - [ ] Form should stay open (not close immediately)
-7. Click "Create Item"
-8. **Check Processing:**
-   - [ ] Form should show "Processing X IronDrive files..."
-   - [ ] Should see polling messages in console
-   - [ ] After ~5-15 seconds, images should appear in form preview
-   - [ ] Form should stay open showing the processed images
-9. Close the form manually
-
-### Expected Results:
-- Item created successfully
-- Images visible in form after processing
-- Console shows `[POLL] All files processed!`
-- Console shows CDN URLs in `[POLL] File ready:`
-
-## Test 2: Verify Inventory Thumbnail
-
-### Steps:
-1. Look at the inventory grid/list
-2. Find the item you just created
-3. **Check Thumbnail:**
-   - [ ] Should show actual image (not orange excavator fallback)
-   - [ ] Should show image count badge
-   - [ ] Hovering should show "Click to view gallery"
-
-### Expected Results:
-- Console shows `[INVENTORY] Thumbnails loaded:` with CDN URLs
-- Thumbnail displays correctly
-- No fallback image needed
-
-## Test 3: Edit Item and View Images
-
-### Steps:
-1. Click "Edit" on the item
-2. **Check Form:**
-   - [ ] Should load with images visible immediately
-   - [ ] Images should have CDN URLs (not white boxes)
-   - [ ] Console shows `[LOAD] Building file object:` with CDN URLs
-3. Try to reorder images by dragging
-4. Save changes
-
-### Expected Results:
-- Images load immediately in edit mode
-- All images visible with thumbnails
-- Reordering works
-- Save completes successfully
-
-## Test 4: Gallery View
-
-### Steps:
-1. Click the thumbnail image in inventory grid
-2. **Check Gallery Modal:**
-   - [ ] All images should display in gallery
-   - [ ] Can navigate between images
-   - [ ] Full-size images load from CDN
-
-### Expected Results:
-- Gallery opens with all images
-- Images display at full quality
-- Navigation works smoothly
-
-## Test 5: Upload PC Files (Baseline)
-
-### Steps:
-1. Create another new item
-2. Use "Upload from PC" instead
-3. Select 2-3 images from computer
-4. Create item
-
-### Expected Results:
-- PC upload works as before
-- Images appear immediately (no processing wait)
-- Thumbnail shows immediately
-
-## Test 6: Mixed Upload (IronDrive + PC)
-
-### Steps:
-1. Create another new item
-2. Upload 1-2 images from PC
-3. Then pick 1-2 from IronDrive
-4. Create item
-
-### Expected Results:
-- Both types of images work together
-- PC images available immediately
-- IronDrive images process and appear after ~5-15 seconds
-- All images attached to the item
-
-## Test 7: Delete Item
-
-### Steps:
-1. Delete one of the test items
-2. Check console logs
-
-### Expected Results:
-- Console shows `[INVENTORY] Decision: SKIP (IronDrive file, never delete from RAID)`
-- IronDrive files NOT deleted from RAID
-- PC-uploaded files DO get deleted
-- Item removed from database
-
-## Database Verification Queries
-
-After testing, run these queries to verify data integrity:
-
-```sql
--- Check items were created correctly
-SELECT
-  ii.id,
-  ii.inventory_number,
-  ii.title,
-  COUNT(af.id) as file_count
-FROM inventory_items ii
-LEFT JOIN auction_files af ON ii.id = af.item_id AND af.detached_at IS NULL
-GROUP BY ii.id
-ORDER BY ii.created_at DESC;
-
--- Check all files have proper variants
-SELECT
-  item_id,
-  asset_group_id,
-  array_agg(variant ORDER BY variant) as variants,
-  MAX(cdn_url) as has_cdn_url
-FROM auction_files
-WHERE detached_at IS NULL
-GROUP BY item_id, asset_group_id
-HAVING array_agg(variant ORDER BY variant) != ARRAY['source']::text[];
-
--- Check publish jobs completed
-SELECT
-  status,
-  COUNT(*) as count
-FROM publish_jobs
-GROUP BY status;
+Delete all files in the B2 bucket using the cleanup script:
+```bash
+./cleanup-6-orphaned-files.sh
 ```
 
-## Success Criteria
+Or manually delete the 6 asset group folders in B2:
+- `assets/de7f090b-124b-4a44-84d2-6d7bbd0f03e2/`
+- `assets/2326e6c3-f719-4d62-a168-39ec388cfb48/`
+- `assets/67725319-24df-46bd-84ed-e53410964bc6/`
+- `assets/a0e76a7d-4014-40ba-bd75-f1a9ce592fd7/`
+- `assets/6e5fb8a8-5929-4a86-b949-bfac0e0fcac8/`
+- `assets/353668cf-baf9-4114-90bf-34761e26100c/`
 
-✅ All tests pass without errors
-✅ IronDrive images appear after processing (5-15 seconds)
-✅ Thumbnails show actual images (no fallbacks)
-✅ Edit form loads images immediately
-✅ Gallery displays all images correctly
-✅ No orphaned files (all variants have item_id)
-✅ Worker processes jobs successfully
-✅ Console logs show expected behavior
+## Step 2: Clean Database
 
-## If Something Fails
+Database is already clean (all counts are 0).
 
-1. Check browser console for errors
-2. Check Railway worker logs
-3. Check Media Jobs tab in admin panel
-4. Run diagnostic queries from `DIAGNOSTIC_QUERIES.sql`
-5. Verify worker is running and processing jobs
+To verify:
+```sql
+SELECT COUNT(*) FROM inventory_items;
+SELECT COUNT(*) FROM auction_files;
+SELECT COUNT(*) FROM publish_jobs;
+```
+
+All should return 0.
+
+## Step 3: Deploy Updated Worker
+
+1. Upload `worker-folder-deletion-fix.tar.gz` to Railway
+2. Wait for deployment
+3. Check logs for "Deleting entire asset group folder from B2"
+
+## Step 4: Fresh Test
+
+1. Upload new item with image
+2. Verify files created in B2 (should be 3: source, thumb, display)
+3. Delete the item
+4. Wait 30 seconds
+5. Verify ALL files removed from B2 (folder should not exist)
+
+## Success = No orphaned files!

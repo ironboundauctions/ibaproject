@@ -287,7 +287,6 @@ export class DatabaseService {
   }
 
   async getFilesForCleanup(): Promise<AuctionFile[]> {
-    // TESTING MODE: Immediate deletion (was 30 days)
     const result = await this.pool.query<AuctionFile>(
       `SELECT * FROM auction_files
        WHERE detached_at IS NOT NULL

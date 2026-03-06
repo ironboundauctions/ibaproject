@@ -50,6 +50,7 @@ export class InventoryService {
     const { data, error } = await supabase
       .from('inventory_items')
       .select('*')
+      .is('deleted_at', null)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -61,6 +62,7 @@ export class InventoryService {
       .from('inventory_items')
       .select('*')
       .eq('status', 'cataloged')
+      .is('deleted_at', null)
       .order('inventory_number', { ascending: true });
 
     if (error) throw error;
