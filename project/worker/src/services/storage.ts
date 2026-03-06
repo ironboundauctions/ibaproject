@@ -107,28 +107,22 @@ export class StorageService {
     }
   }
 
-  async deleteAssetGroup(assetGroupId: string, variants: string[] = ['thumb', 'display', 'video']): Promise<void> {
-    logger.info('Deleting asset group from B2', { assetGroupId, variants });
-
-    const keys: string[] = [];
-
-    for (const variant of variants) {
-      if (variant === 'thumb' || variant === 'display') {
-        keys.push(`assets/${assetGroupId}/${variant}.webp`);
-      } else if (variant === 'video') {
-        const videoExtensions = ['.mp4', '.mov', '.webm', '.avi', '.mkv'];
-        for (const ext of videoExtensions) {
-          keys.push(`assets/${assetGroupId}/video${ext}`);
-        }
-      }
-    }
+  async deleteAssetGroup(assetGroupId: string): Promise<void> {
+    logger.info('Deleting entire asset group folder from B2', { assetGroupId });
 
     try {
+      const files = await this.listAssetGroupFiles(assetGroupId);
+
+      if (files.length === 0) {
+        logger.info('No files found for asset group', { assetGroupId });
+        return;
+      }
+
       const result = await this.s3Client.send(
         new DeleteObjectsCommand({
           Bucket: config.b2.bucket,
           Delete: {
-            Objects: keys.map(Key => ({ Key })),
+            Objects: files.map(Key => ({ Key })),
             Quiet: false,
           },
         })
@@ -142,9 +136,9 @@ export class StorageService {
         });
       }
 
-      logger.info('Asset group deletion complete', {
+      logger.info('Asset group folder deletion complete', {
         assetGroupId,
-        keysAttempted: keys.length,
+        filesFound: files.length,
         deleted: result.Deleted?.length || 0,
         errors: result.Errors?.length || 0
       });
