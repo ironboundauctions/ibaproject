@@ -65,9 +65,9 @@ export class CleanupProcessor {
     let errorMessage: string | null = null;
 
     try {
-      await this.storage.deleteAssetGroup(file.asset_group_id);
+      await this.storage.deleteAssetGroup(file.asset_group_id, file.item_id || undefined);
       b2DeletionSuccess = true;
-      logger.info('B2 files deleted', { assetGroupId: file.asset_group_id });
+      logger.info('B2 files deleted', { assetGroupId: file.asset_group_id, itemId: file.item_id });
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Unknown B2 deletion error';
       logger.error('B2 deletion failed', {

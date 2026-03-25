@@ -76,7 +76,8 @@ export class JobProcessor {
     const { thumbUrl, thumbB2Key, displayUrl, displayB2Key } = await this.storage.uploadVariants(
       file.asset_group_id,
       variants.thumb.buffer,
-      variants.display.buffer
+      variants.display.buffer,
+      file.item_id || undefined
     );
 
     await this.db.upsertVariant(file.asset_group_id, 'thumb', thumbUrl, {
@@ -114,7 +115,8 @@ export class JobProcessor {
     const { videoUrl, videoB2Key } = await this.storage.uploadVideo(
       file.asset_group_id,
       sourceBuffer,
-      mimeType
+      mimeType,
+      file.item_id || undefined
     );
 
     await this.db.upsertVariant(file.asset_group_id, 'video', videoUrl, {
@@ -128,7 +130,8 @@ export class JobProcessor {
       const { thumbUrl, thumbB2Key, displayUrl, displayB2Key } = await this.storage.uploadVariants(
         file.asset_group_id,
         variants.thumb.buffer,
-        variants.display.buffer
+        variants.display.buffer,
+        file.item_id || undefined
       );
 
       await this.db.upsertVariant(file.asset_group_id, 'thumb', thumbUrl, {

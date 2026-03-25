@@ -43,10 +43,14 @@ export class StorageService {
   async uploadVariants(
     assetGroupId: string,
     thumbBuffer: Buffer,
-    displayBuffer: Buffer
+    displayBuffer: Buffer,
+    itemId?: string
   ): Promise<{ thumbUrl: string; thumbB2Key: string; displayUrl: string; displayB2Key: string }> {
-    const thumbKey = `assets/${assetGroupId}/thumb.webp`;
-    const displayKey = `assets/${assetGroupId}/display.webp`;
+    if (!itemId) {
+      throw new Error('item_id is required for B2 upload path generation');
+    }
+    const thumbKey = `assets/${itemId}/${assetGroupId}/thumb.webp`;
+    const displayKey = `assets/${itemId}/${assetGroupId}/display.webp`;
 
     const [thumbUrl, displayUrl] = await Promise.all([
       this.uploadFile(thumbKey, thumbBuffer, 'image/webp'),
@@ -64,10 +68,14 @@ export class StorageService {
   async uploadVideo(
     assetGroupId: string,
     videoBuffer: Buffer,
-    mimeType: string
+    mimeType: string,
+    itemId?: string
   ): Promise<{ videoUrl: string; videoB2Key: string }> {
+    if (!itemId) {
+      throw new Error('item_id is required for B2 upload path generation');
+    }
     const extension = this.getVideoExtension(mimeType);
-    const videoKey = `assets/${assetGroupId}/video${extension}`;
+    const videoKey = `assets/${itemId}/${assetGroupId}/video${extension}`;
 
     const videoUrl = await this.uploadFile(videoKey, videoBuffer, mimeType);
 
@@ -107,11 +115,11 @@ export class StorageService {
     }
   }
 
-  async deleteAssetGroup(assetGroupId: string): Promise<void> {
-    logger.info('Deleting entire asset group folder from B2', { assetGroupId });
+  async deleteAssetGroup(assetGroupId: string, itemId?: string): Promise<void> {
+    logger.info('Deleting entire asset group folder from B2', { assetGroupId, itemId });
 
     try {
-      const files = await this.listAssetGroupFiles(assetGroupId);
+      const files = await this.listAssetGroupFiles(assetGroupId, itemId);
 
       if (files.length === 0) {
         logger.info('No files found for asset group', { assetGroupId });
@@ -148,20 +156,27 @@ export class StorageService {
     }
   }
 
-  generateCdnKeyPrefix(assetGroupId: string): string {
-    return `assets/${assetGroupId}`;
+  generateCdnKeyPrefix(assetGroupId: string, itemId?: string): string {
+    if (!itemId) {
+      throw new Error('item_id is required for B2 path generation');
+    }
+    return `assets/${itemId}/${assetGroupId}`;
   }
 
   getCdnUrl(key: string): string {
     return `${config.cdn.baseUrl}/${key}`;
   }
 
-  async listAssetGroupFiles(assetGroupId: string): Promise<string[]> {
+  async listAssetGroupFiles(assetGroupId: string, itemId?: string): Promise<string[]> {
     try {
+      const prefix = itemId
+        ? `assets/${itemId}/${assetGroupId}/`
+        : `assets/${assetGroupId}/`;
+
       const result = await this.s3Client.send(
         new ListObjectsV2Command({
           Bucket: config.b2.bucket,
-          Prefix: `assets/${assetGroupId}/`,
+          Prefix: prefix,
         })
       );
 

@@ -41,7 +41,7 @@ export class UploadHandler {
       const uploadResults = [];
 
       // Upload source variant (original file, converted to WebP)
-      const sourceB2Key = `assets/${assetGroupId}/source.webp`;
+      const sourceB2Key = `assets/${item_id}/${assetGroupId}/source.webp`;
       const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
       await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
 
@@ -75,7 +75,7 @@ export class UploadHandler {
       ];
 
       for (const { name, data } of variantEntries) {
-        const b2Key = `assets/${assetGroupId}/${name}.webp`;
+        const b2Key = `assets/${item_id}/${assetGroupId}/${name}.webp`;
         const cdnUrl = this.storage.getCdnUrl(b2Key);
 
         await this.storage.uploadFile(b2Key, data.buffer, 'image/webp');
