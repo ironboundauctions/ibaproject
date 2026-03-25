@@ -90,7 +90,7 @@ export class ImageProcessor {
         fit: 'inside',
         withoutEnlargement: true,
       })
-      .webp({ quality: 80 });
+      .webp({ quality: 90 });
 
     const processedBuffer = await image.toBuffer();
     const metadata = await sharp(processedBuffer).metadata();
