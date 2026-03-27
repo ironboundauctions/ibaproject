@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X } from 'lucide-react';
+import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X, Upload } from 'lucide-react';
 import { InventoryService, InventoryItem } from '../services/inventoryService';
 import { ConsignerService } from '../services/consignerService';
 import { Consigner } from '../types/consigner';
 import InventoryItemFormNew from './InventoryItemFormNew';
 import ImageGalleryModal from './ImageGalleryModal';
 import BulkActions from './BulkActions';
+import BulkUploadModal from './BulkUploadModal';
 import AdvancedFilters, { FilterState } from './AdvancedFilters';
 import { formatCurrency, EQUIPMENT_CATEGORIES } from '../utils/formatters';
 import { supabase } from '../lib/supabase';
@@ -37,6 +38,8 @@ export default function GlobalInventoryManagement() {
     dateFrom: '',
     dateTo: ''
   });
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [bulkUploadItemId, setBulkUploadItemId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -741,6 +744,16 @@ export default function GlobalInventoryManagement() {
                     </td>
                     <td className="px-6 py-4 text-sm space-x-2">
                       <button
+                        onClick={() => {
+                          setBulkUploadItemId(item.id);
+                          setShowBulkUpload(true);
+                        }}
+                        className="text-blue-500 hover:text-blue-600 transition-colors"
+                        title="Bulk Upload Images"
+                      >
+                        <Upload className="h-4 w-4" />
+                      </button>
+                      <button
                         onClick={() => handleEditItem(item)}
                         className="text-ironbound-orange-500 hover:text-ironbound-orange-600 transition-colors"
                         title="Edit"
@@ -778,6 +791,20 @@ export default function GlobalInventoryManagement() {
         onBulkExport={handleBulkExport}
         onBulkStatusChange={handleBulkStatusChange}
       />
+
+      {showBulkUpload && bulkUploadItemId && (
+        <BulkUploadModal
+          isOpen={showBulkUpload}
+          onClose={() => {
+            setShowBulkUpload(false);
+            setBulkUploadItemId(null);
+          }}
+          itemId={bulkUploadItemId}
+          onSuccess={() => {
+            fetchData();
+          }}
+        />
+      )}
     </div>
   );
 }

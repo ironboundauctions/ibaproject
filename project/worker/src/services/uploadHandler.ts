@@ -124,4 +124,271 @@ export class UploadHandler {
       });
     }
   }
+
+  async handleBulkUpload(req: Request, res: Response): Promise<void> {
+    try {
+      if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
+        res.status(400).json({ error: 'No files provided' });
+        return;
+      }
+
+      logger.info('Processing bulk inventory upload', { count: req.files.length });
+
+      // Process files in batches of 5 for parallel processing
+      const BATCH_SIZE = 5;
+      const allResults: any[] = [];
+      const allErrors: any[] = [];
+
+      for (let i = 0; i < req.files.length; i += BATCH_SIZE) {
+        const batch = req.files.slice(i, i + BATCH_SIZE);
+
+        const results = await Promise.allSettled(
+          batch.map(async (file) => {
+            const assetGroupId = crypto.randomUUID();
+
+            // Process image to get all variants
+            const variants = await this.imageProcessor.processImage(file.buffer);
+
+            // Upload all variants to B2 using hybrid structure (no item_id)
+            const uploadedVariants = [];
+
+            // Upload source variant
+            const sourceB2Key = `assets/${assetGroupId}/source.webp`;
+            const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
+            await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
+            uploadedVariants.push({
+              variant: 'source',
+              cdnUrl: sourceCdnUrl,
+              width: variants.display.width,
+              height: variants.display.height,
+            });
+
+            // Upload display and thumb variants
+            for (const [variantName, variantData] of Object.entries(variants)) {
+              if (variantName === 'display' || variantName === 'thumb') {
+                const b2Key = `assets/${assetGroupId}/${variantName}.webp`;
+                const cdnUrl = this.storage.getCdnUrl(b2Key);
+                await this.storage.uploadFile(b2Key, variantData.buffer, 'image/webp');
+                uploadedVariants.push({
+                  variant: variantName,
+                  cdnUrl,
+                  width: variantData.width,
+                  height: variantData.height,
+                });
+              }
+            }
+
+            return {
+              fileName: file.originalname,
+              fileSize: file.size,
+              mimeType: file.mimetype,
+              assetGroupId,
+              cdnUrls: {
+                source: uploadedVariants.find(v => v.variant === 'source')?.cdnUrl,
+                display: uploadedVariants.find(v => v.variant === 'display')?.cdnUrl,
+                thumb: uploadedVariants.find(v => v.variant === 'thumb')?.cdnUrl,
+              },
+              width: variants.display.width,
+              height: variants.display.height,
+            };
+          })
+        );
+
+        const successful = results
+          .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+          .map(r => r.value);
+
+        const failed = results
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .map(r => ({ error: r.reason instanceof Error ? r.reason.message : String(r.reason) }));
+
+        allResults.push(...successful);
+        allErrors.push(...failed);
+      }
+
+      logger.info('Bulk inventory upload completed', {
+        total: req.files.length,
+        successful: allResults.length,
+        failed: allErrors.length,
+      });
+
+      res.json({
+        success: true,
+        uploadedFiles: allResults,
+        errors: allErrors.length > 0 ? allErrors : undefined,
+      });
+
+    } catch (error) {
+      logger.error('Bulk inventory upload failed', error as Error);
+      res.status(500).json({
+        error: 'Bulk upload failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async handleBulkProcess(req: Request, res: Response): Promise<void> {
+    try {
+      const { groups } = req.body;
+
+      if (!groups || !Array.isArray(groups) || groups.length === 0) {
+        res.status(400).json({ error: 'groups array is required' });
+        return;
+      }
+
+      logger.info('Processing bulk inventory creation', {
+        groupCount: groups.length,
+      });
+
+      const results = [];
+      const errors = [];
+
+      for (const group of groups) {
+        try {
+          const { inv_number, files } = group;
+
+          if (!inv_number || !files || files.length === 0) {
+            errors.push({
+              inv_number,
+              error: 'Invalid group structure',
+            });
+            continue;
+          }
+
+          // Link files to database by creating auction_files records
+          let displayOrder = 0;
+          for (const file of files) {
+            const { assetGroupId, fileName, cdnUrls } = file;
+
+            // Create database records for each variant
+            for (const [variant, cdnUrl] of Object.entries(cdnUrls)) {
+              if (cdnUrl) {
+                const b2Key = `assets/${assetGroupId}/${variant}.webp`;
+
+                const variantId = await this.db.upsertVariant(
+                  assetGroupId,
+                  variant,
+                  cdnUrl as string,
+                  {
+                    b2Key,
+                    width: file.width || 0,
+                    height: file.height || 0,
+                    displayOrder,
+                  }
+                );
+
+                // Note: item_id will be null initially, will be set when inventory items are created
+                await this.db.setVariantMetadata(
+                  variantId,
+                  fileName,
+                  file.fileSize || 0,
+                  file.mimeType || 'image/webp'
+                );
+              }
+            }
+
+            displayOrder++;
+          }
+
+          results.push({
+            inv_number,
+            fileCount: files.length,
+            assetGroupIds: files.map((f: any) => f.assetGroupId),
+          });
+        } catch (error) {
+          logger.error('Error processing group', {
+            inv_number: group.inv_number,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          errors.push({
+            inv_number: group.inv_number,
+            error: error instanceof Error ? error.message : 'Processing failed',
+          });
+        }
+      }
+
+      logger.info('Bulk process completed', {
+        total: groups.length,
+        successful: results.length,
+        failed: errors.length,
+      });
+
+      res.json({
+        success: true,
+        processed: results,
+        errors: errors.length > 0 ? errors : undefined,
+      });
+
+    } catch (error) {
+      logger.error('Bulk process failed', error as Error);
+      res.status(500).json({
+        error: 'Bulk process failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async handleDeleteBatchFiles(req: Request, res: Response): Promise<void> {
+    try {
+      const { assetGroupIds } = req.body;
+
+      if (!assetGroupIds || !Array.isArray(assetGroupIds) || assetGroupIds.length === 0) {
+        res.status(400).json({ error: 'assetGroupIds array is required' });
+        return;
+      }
+
+      logger.info('Deleting batch files', { count: assetGroupIds.length });
+
+      const results = [];
+      const errors = [];
+
+      for (const assetGroupId of assetGroupIds) {
+        try {
+          // Delete from B2
+          await this.storage.deleteAssetGroup(assetGroupId);
+
+          // Delete database records
+          const filesToDelete = await this.db.getFilesByAssetGroup(assetGroupId);
+          const fileIds = filesToDelete.map(f => f.id);
+
+          if (fileIds.length > 0) {
+            await this.db.deleteFiles(fileIds);
+          }
+
+          results.push({
+            assetGroupId,
+            deletedCount: fileIds.length,
+          });
+        } catch (error) {
+          logger.error('Error deleting asset group', {
+            assetGroupId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          errors.push({
+            assetGroupId,
+            error: error instanceof Error ? error.message : 'Deletion failed',
+          });
+        }
+      }
+
+      logger.info('Batch file deletion completed', {
+        total: assetGroupIds.length,
+        successful: results.length,
+        failed: errors.length,
+      });
+
+      res.json({
+        success: true,
+        deleted: results,
+        errors: errors.length > 0 ? errors : undefined,
+      });
+
+    } catch (error) {
+      logger.error('Delete batch files failed', error as Error);
+      res.status(500).json({
+        error: 'Delete batch files failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }

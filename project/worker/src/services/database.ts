@@ -235,6 +235,23 @@ export class DatabaseService {
     );
   }
 
+  async setVariantMetadata(
+    variantId: string,
+    originalName: string,
+    bytes: number,
+    mimeType: string
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE auction_files
+       SET original_name = $1,
+           bytes = $2,
+           mime_type = $3,
+           updated_at = NOW()
+       WHERE id = $4`,
+      [originalName, bytes, mimeType, variantId]
+    );
+  }
+
   async markJobFailed(jobId: string, fileId: string, errorMessage: string): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -327,6 +344,27 @@ export class DatabaseService {
     );
 
     logger.info('Deleted files from database', { count: fileIds.length });
+  }
+
+  async getExpiredBatchJobs(): Promise<any[]> {
+    const result = await this.pool.query(
+      `SELECT id, uploaded_files
+       FROM batch_analysis_jobs
+       WHERE status = 'ready_for_review'
+         AND expires_at < NOW()
+       LIMIT 50`
+    );
+    return result.rows;
+  }
+
+  async markBatchExpired(batchId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE batch_analysis_jobs
+       SET status = 'expired',
+           updated_at = NOW()
+       WHERE id = $1`,
+      [batchId]
+    );
   }
 
   async createAuctionFile(data: {

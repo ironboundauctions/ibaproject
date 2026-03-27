@@ -102,6 +102,18 @@ class MediaPublishingWorker {
       await this.uploadHandler.handlePCUpload(req, res);
     });
 
+    app.post('/api/bulk-upload', upload.array('files', 1000), async (req: Request, res: Response) => {
+      await this.uploadHandler.handleBulkUpload(req, res);
+    });
+
+    app.post('/api/bulk-process', async (req: Request, res: Response) => {
+      await this.uploadHandler.handleBulkProcess(req, res);
+    });
+
+    app.post('/api/delete-batch-files', async (req: Request, res: Response) => {
+      await this.uploadHandler.handleDeleteBatchFiles(req, res);
+    });
+
     app.get('/api/check-asset-group/:assetGroupId', async (req: Request, res: Response) => {
       try {
         const { assetGroupId } = req.params;
@@ -187,6 +199,11 @@ class MediaPublishingWorker {
         try {
           logger.info('Running scheduled cleanup');
           await this.cleanupProcessor.processCleanup();
+
+          // Also cleanup expired batch jobs
+          logger.info('Running expired batch cleanup');
+          await this.cleanupProcessor.cleanupExpiredBatches();
+
           this.lastCleanup = new Date();
         } catch (error) {
           logger.error('Cleanup failed', error as Error);
