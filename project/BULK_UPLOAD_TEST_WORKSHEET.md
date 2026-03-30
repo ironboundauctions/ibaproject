@@ -64,12 +64,12 @@ Prepare 3 sets of test images:
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
-**3. Upload & Analysis**
-- [ ] Click "Upload and Analyze" button
-- [ ] Progress message shows "Uploading..."
-- [ ] Progress changes to "Analyzing barcodes..."
-- **Expected:** Smooth transition, no errors
-- **Time taken:** Upload: ___s, Analysis: ___s
+**3. Analyze Files**
+- [ ] Click "Analyze" button
+- [ ] Progress message shows "Analyzing barcodes..."
+- [ ] Analysis completes and confirmation modal appears
+- **Expected:** Fast analysis (seconds), no upload yet, smooth transition to confirmation modal
+- **Time taken:** Analysis: ___s
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
@@ -95,10 +95,11 @@ Prepare 3 sets of test images:
 
 **6. Confirm and Create Items**
 - [ ] Click "Confirm and Create Items" button
-- [ ] Processing message appears
+- [ ] Progress shows "Uploading confirmed files..."
+- [ ] Progress changes to "Processing images..."
 - [ ] Success message shows items created
-- **Expected:** Success message with count
-- **Record:** Items created: ___
+- **Expected:** Two-stage process (upload then process), success message with count
+- **Record:** Upload time: ___s, Processing time: ___s, Items created: ___
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
@@ -125,8 +126,9 @@ _______________________________________________
 
 ### Steps:
 
-**1. Upload Files Without Barcodes**
-- [ ] Upload 3 images with NO QR codes
+**1. Analyze Files Without Barcodes**
+- [ ] Select 3 images with NO QR codes
+- [ ] Click "Analyze" button
 - [ ] Wait for analysis to complete
 - **Expected:** All 3 files in "Ungrouped Files" section
 - **Result:** PASS / FAIL
@@ -189,9 +191,10 @@ _______________________________________________
 
 ### Steps:
 
-**1. Upload Mixed Files**
-- [ ] Upload 10 images (5 with barcodes, 5 without)
-- [ ] Wait for analysis
+**1. Analyze Mixed Files**
+- [ ] Select 10 images (5 with barcodes, 5 without)
+- [ ] Click "Analyze" button
+- [ ] Wait for analysis to complete
 - **Expected:** Mixed grouped/ungrouped results
 - **Result:** PASS / FAIL
 - **Notes:** _______________
@@ -222,12 +225,13 @@ _______________________________________________
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
-**5. Cancel Upload (Test Cleanup)**
-- [ ] Upload 5 new files
-- [ ] Wait for analysis
-- [ ] Click "Cancel" button
+**5. Cancel After Analysis (Test Cleanup)**
+- [ ] Select 5 new files
+- [ ] Click "Analyze" button
+- [ ] Wait for analysis to complete
+- [ ] Click "Cancel" button in confirmation modal
 - [ ] Modal closes
-- **Expected:** Modal closes, no items created
+- **Expected:** Modal closes, no items created, no files uploaded to storage
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
@@ -271,10 +275,11 @@ _______________________________________________
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
-**2. Upload Image with Same Inventory Number**
+**2. Analyze Image with Same Inventory Number**
 - [ ] Open bulk upload
-- [ ] Upload 1 image with QR code containing "DUP-001"
-- [ ] Wait for analysis
+- [ ] Select 1 image with QR code containing "DUP-001"
+- [ ] Click "Analyze" button
+- [ ] Wait for analysis to complete
 - **Expected:** File grouped under "DUP-001"
 - **Result:** PASS / FAIL
 - **Notes:** _______________
@@ -315,13 +320,13 @@ _______________________________________________
 - **Actual file count:** ___
 - **Notes:** _______________
 
-**2. Upload Large Batch**
+**2. Analyze Large Batch**
 - [ ] Open bulk upload modal
 - [ ] Select all prepared files
-- [ ] Click "Upload and Analyze"
-- [ ] Monitor browser performance
-- **Expected:** No browser freeze, smooth operation
-- **Record:** Upload time: ___s, Analysis time: ___s
+- [ ] Click "Analyze"
+- [ ] Monitor browser performance during analysis
+- **Expected:** No browser freeze, smooth operation, fast analysis
+- **Record:** Analysis time: ___s
 - **Browser issues:** _______________
 - **Result:** PASS / FAIL
 
@@ -334,10 +339,10 @@ _______________________________________________
 - **Result:** PASS / FAIL
 
 **4. Confirm Creation**
-- [ ] Click confirm
-- [ ] Monitor processing time
+- [ ] Click "Confirm and Create Items"
+- [ ] Monitor upload and processing time
 - **Expected:** All items created successfully
-- **Record:** Processing time: ___s, Success count: ___
+- **Record:** Upload time: ___s, Processing time: ___s, Success count: ___
 - **Result:** PASS / FAIL
 
 ### ✅ Test 5 Overall Result: PASS / FAIL
@@ -354,31 +359,31 @@ _______________________________________________
 
 ### Steps:
 
-**1. Upload Invalid File**
-- [ ] Try to upload a .txt file or .pdf
-- **Expected:** File rejected with error message
+**1. Select Invalid File**
+- [ ] Try to select a .txt file or .pdf
+- **Expected:** File rejected with error message or filtered out
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
-**2. Upload Corrupt Image**
-- [ ] Upload a renamed .txt file as .jpg
-- [ ] Click upload
-- **Expected:** Error during processing, clear error message
+**2. Analyze Corrupt Image**
+- [ ] Select a renamed .txt file as .jpg
+- [ ] Click "Analyze" button
+- **Expected:** Error during analysis, clear error message
 - **Error shown:** _______________
 - **Result:** PASS / FAIL
 
-**3. Network Interruption Simulation**
+**3. Network Interruption During Analysis**
 - [ ] Open browser DevTools → Network tab
-- [ ] Start upload
-- [ ] Throttle to "Offline" mid-upload
+- [ ] Start analysis
+- [ ] Throttle to "Offline" mid-analysis
 - **Expected:** Error message about network failure
 - **Actual behavior:** _______________
 - **Result:** PASS / FAIL
 
-**4. Verify Partial Upload Handling**
-- [ ] Check if any files were partially uploaded
+**4. Verify Partial Analysis Handling**
+- [ ] Check if any files were partially analyzed
 - [ ] Check batch_analysis_jobs table
-- **Expected:** Batch in error state or cancelled
+- **Expected:** Batch in error state, no files uploaded to storage yet
 - **Result:** _______________
 
 ### ✅ Test 6 Overall Result: PASS / FAIL
@@ -395,10 +400,11 @@ _______________________________________________
 
 ### Steps:
 
-**1. Upload Mixed Media**
-- [ ] Upload 3 images (with barcodes)
-- [ ] Upload 2 video files (.mp4, .mov)
-- **Expected:** All files accepted
+**1. Analyze Mixed Media**
+- [ ] Select 3 images (with barcodes)
+- [ ] Select 2 video files (.mp4, .mov)
+- [ ] Click "Analyze" button
+- **Expected:** All files accepted and analyzed
 - **Result:** PASS / FAIL
 - **Notes:** _______________
 
@@ -546,9 +552,9 @@ AND baj.status IN ('cancelled', 'expired');
 ---
 
 ### Performance Observations
-**Upload Speed:** _______________
-**Analysis Speed:** _______________
-**Processing Speed:** _______________
+**Analysis Speed (before confirmation):** _______________
+**Upload Speed (after confirmation):** _______________
+**Processing Speed (after upload):** _______________
 **Browser Performance:** _______________
 
 ---

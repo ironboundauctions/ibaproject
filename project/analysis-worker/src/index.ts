@@ -55,7 +55,7 @@ async function main() {
       });
     });
 
-    // Barcode analysis endpoint
+    // Barcode analysis endpoint - receives file buffers BEFORE upload
     app.post('/api/analyze-batch', upload.array('files'), async (req: Request, res: Response) => {
       try {
         const files = req.files as Express.Multer.File[];
@@ -64,25 +64,15 @@ async function main() {
           return res.status(400).json({ error: 'No files provided' });
         }
 
-        // Get asset group IDs from request body
-        const fileMetadata = JSON.parse(req.body.metadata || '[]') as Array<{
-          fileName: string;
-          assetGroupId: string;
-        }>;
-
         logger.info('Starting batch analysis', {
           fileCount: files.length,
-          metadataCount: fileMetadata.length,
+          totalSize: files.reduce((sum, f) => sum + f.size, 0),
         });
 
         // Scan all files for barcodes
+        // No asset group IDs yet - files haven't been uploaded
         const scanPromises = files.map((file, index) => {
-          const metadata = fileMetadata.find(m => m.fileName === file.originalname) || {
-            fileName: file.originalname,
-            assetGroupId: `asset_${Date.now()}_${index}`,
-          };
-
-          return scanner.scanImage(file.buffer, metadata.fileName, metadata.assetGroupId);
+          return scanner.scanImage(file.buffer, file.originalname, `temp_${Date.now()}_${index}`);
         });
 
         const scanResults = await Promise.all(scanPromises);
@@ -141,9 +131,10 @@ async function main() {
       }
     });
 
-    const server = app.listen(config.server.port, () => {
+    const server = app.listen(config.server.port, '0.0.0.0', () => {
       logger.info('Analysis Worker started', {
         port: config.server.port,
+        host: '0.0.0.0',
         service: 'barcode-analysis-worker',
       });
     });

@@ -465,13 +465,22 @@ export default function GlobalInventoryManagement() {
             Manage all inventory items across all events
           </p>
         </div>
-        <button
-          onClick={handleCreateItem}
-          className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Add Item</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowBulkUpload(true)}
+            className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
+          >
+            <Upload className="h-4 w-4" />
+            <span>Bulk Upload</span>
+          </button>
+          <button
+            onClick={handleCreateItem}
+            className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Add Item</span>
+          </button>
+        </div>
       </div>
 
       <AdvancedFilters
@@ -792,14 +801,14 @@ export default function GlobalInventoryManagement() {
         onBulkStatusChange={handleBulkStatusChange}
       />
 
-      {showBulkUpload && bulkUploadItemId && (
+      {showBulkUpload && (
         <BulkUploadModal
           isOpen={showBulkUpload}
           onClose={() => {
             setShowBulkUpload(false);
             setBulkUploadItemId(null);
           }}
-          itemId={bulkUploadItemId}
+          itemId={bulkUploadItemId || undefined}
           onSuccess={() => {
             fetchData();
           }}

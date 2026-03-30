@@ -1,128 +1,131 @@
 # Bulk Upload Quick Start
 
-Get the bulk upload system running in 5 steps.
+Upload multiple barcode-labeled images at once and automatically create inventory items grouped by barcode number.
 
-## Step 1: Deploy Analysis Worker to Railway
+## What This Should Do (Per Original Plan)
 
-```bash
-cd analysis-worker
-npm install
+1. User selects images with barcodes
+2. **Analysis Worker scans for barcodes FIRST (no upload yet)**
+3. Files are automatically grouped by inventory number
+4. User reviews/edits the groups in confirmation modal
+5. **User confirms → THEN Processing Worker uploads to B2**
+6. Creates inventory items with files attached
+
+## Current Implementation Status
+
+**WARNING: Current code uploads files BEFORE analysis, which is backwards!**
+
+The plan specified:
+- Analyze first (send file buffers to Analysis Worker)
+- Show results for user confirmation
+- Only upload confirmed files
+
+Current code does:
+- Upload to B2 first
+- Then download from B2 to analyze
+- Wastes bandwidth/storage for unconfirmed files
+
+## How It Should Work (Per Plan)
+
+```
+Select Files → Analysis Worker Scans Barcodes → Group by Number → User Confirms → Upload to B2 → Create Items
 ```
 
-1. Go to your existing Railway project (same project as your processing worker)
-2. Click "New Service" → "GitHub Repo"
-3. Select your repository and set Root Directory to `analysis-worker`
-4. Add environment variables (same as your processing worker):
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `IRONDRIVE_API_URL`
-5. Deploy and copy the public URL
+**Step by step:**
+1. **File Selection**: User picks images from disk
+2. **Analysis Phase**: Send file buffers to Analysis Worker via POST /api/analyze-batch
+3. **Barcode Scanning**: Worker uses @zxing/library to scan QR codes and extract inventory numbers
+4. **Grouping**: Worker returns `{grouped: [...], ungrouped: [...], errors: [...]}`
+5. **Confirmation Modal**: User reviews, reorganizes groups, removes unwanted files
+6. **Upload Phase**: Send confirmed files to Processing Worker in chunks of 5
+7. **Processing**: Worker uploads to B2 and creates all variants (source, display, thumb)
+8. **Item Creation**: Create inventory_items and link auction_files
 
-**Result**: Analysis Worker is running alongside your processing worker in the same project
+## Prerequisites
 
-## Step 2: Update Frontend Environment
+- Processing worker deployed on Railway
+- Analysis worker deployed on Railway (lightweight, no Sharp - just barcode scanning)
+- B2 storage configured
+- Worker URLs in `.env`
 
-Add to your `.env` file:
+## Configuration
 
 ```env
+VITE_WORKER_URL=https://your-processing-worker.railway.app
 VITE_ANALYSIS_WORKER_URL=https://your-analysis-worker.railway.app
 ```
 
-Replace `https://your-analysis-worker.railway.app` with the actual Railway URL from Step 1.
+## Key Differences from Current Implementation
 
-**Result**: Frontend can communicate with Analysis Worker
+| What Plan Says | What Code Does | Issue |
+|----------------|----------------|-------|
+| Send file buffers to analysis | Upload to B2, then analyze | Wastes storage |
+| Analyze in memory | Download from B2 to analyze | Wastes bandwidth |
+| Only upload confirmed files | Upload all, delete rejected | Inefficient |
+| Fast feedback (seconds) | Slower (double transfer) | Poor UX |
 
-## Step 3: Verify Database Migration
+## Correct Architecture (Per Plan)
 
-The migration is already applied. Verify with:
+**Analysis Worker:**
+- Receives multipart form data with file buffers
+- Uses @zxing/library for barcode scanning
+- NO image processing (no Sharp dependency)
+- NO B2 access needed
+- Returns JSON with grouping results
+- Lightweight: 256MB RAM sufficient
 
-```sql
-SELECT COUNT(*) FROM batch_analysis_jobs;
+**Processing Worker:**
+- Receives confirmed files ONLY
+- Uploads to B2 in chunks of 5 parallel
+- Creates variants using Sharp
+- Returns CDN URLs
+- Heavy lifting happens AFTER confirmation
+
+## Benefits of Correct Flow
+
+1. **Fast Feedback**: Barcode results in 5-10 seconds (no upload/download)
+2. **Cost Efficient**: Only upload confirmed files
+3. **Bandwidth**: No wasted transfers for rejected files
+4. **Storage**: No temp files cluttering B2
+5. **User Experience**: See results immediately
+
+## What Needs Fixing
+
+The `bulkUploadService.ts` flow needs to be reversed:
+
+**Current (wrong):**
+```typescript
+uploadFiles() → analyzeBatch() → confirm → (files already uploaded)
 ```
 
-**Result**: Should return 0 (table exists but is empty)
-
-## Step 4: Build and Deploy
-
-```bash
-npm run build
+**Correct:**
+```typescript
+analyzeBatch(fileBuffers) → confirm → uploadFiles(confirmedFiles)
 ```
 
-Deploy to your hosting platform (Vercel, Netlify, etc.)
+## Testing (Once Fixed)
 
-**Result**: Frontend is deployed with bulk upload feature
-
-## Step 5: Test the System
-
-1. Log in to your application
-2. Navigate to Global Inventory
-3. Click the Upload icon (↑) next to any item
-4. Select 2-3 test images
-5. Click "Upload and Analyze"
-6. Wait for AI analysis
-7. Review and edit results
-8. Click "Confirm and Add to Inventory"
-
-**Expected**: Images appear in the item's gallery within 30-45 seconds
-
-## Verification Checklist
-
-- [ ] Analysis Worker shows "healthy" at `/health` endpoint
-- [ ] Frontend can access worker (check browser console)
-- [ ] Upload button appears in Global Inventory
-- [ ] Files upload successfully
-- [ ] Analysis job is created in database
-- [ ] AI analysis completes
-- [ ] Results appear in modal
-- [ ] Confirmation adds files to inventory
-- [ ] Files appear in item gallery
-
-## Troubleshooting
-
-**Analysis Worker not accessible?**
-```bash
-curl https://your-worker.railway.app/health
-```
-Should return: `{"status":"healthy",...}`
-
-**Jobs not processing?**
-```sql
-SELECT * FROM batch_analysis_jobs ORDER BY created_at DESC LIMIT 1;
-```
-Check status - should change from "pending" to "analyzing" to "completed"
-
-**Files not appearing?**
-```sql
-SELECT COUNT(*) FROM auction_files WHERE item_id = 'your-item-id';
-```
-Count should increase after upload
-
-## Next Steps
-
-1. Review `docs/BULK_UPLOAD_TESTING_GUIDE.md` for comprehensive testing
-2. Monitor Railway logs for Analysis Worker
-3. Adjust `MAX_CONCURRENT_JOBS` and `BATCH_SIZE` for your load
-4. Set up monitoring and alerts
+1. Open Global Inventory → Bulk Upload
+2. Select 10 images with QR codes
+3. **Verify**: Analysis starts immediately (no upload progress)
+4. **Verify**: Grouped results appear in ~10 seconds
+5. Reorganize groups as needed
+6. Click confirm
+7. **Verify**: NOW upload progress shows
+8. Files appear attached to new inventory items
 
 ## Support
 
 See full documentation:
-- `analysis-worker/DEPLOYMENT_GUIDE.md` - Detailed deployment steps
-- `docs/BULK_UPLOAD_TESTING_GUIDE.md` - Complete testing guide
-- `docs/BULK_UPLOAD_IMPLEMENTATION_SUMMARY.md` - System overview
+- Original plan above (shows correct architecture)
+- `docs/BULK_UPLOAD_IMPLEMENTATION_SUMMARY.md` - Current (incorrect) implementation
+- `analysis-worker/` - Worker that should receive file buffers, not CDN URLs
 
-## Configuration Tuning
+## Next Steps
 
-After initial testing, optimize these settings:
+1. Fix `bulkUploadService.ts` to send file buffers to analysis worker BEFORE upload
+2. Fix Analysis Worker endpoint to receive and scan file buffers directly
+3. Move upload phase to AFTER confirmation
+4. Test with 100+ images to verify efficiency gains
 
-**For faster processing:**
-- Increase `MAX_CONCURRENT_JOBS` to 5-10
-- Increase `BATCH_SIZE` to 20-50
-- Scale Railway service to larger instance
-
-**For cost optimization:**
-- Decrease `BATCH_SIZE` to reduce IronDrive API calls
-- Increase `POLL_INTERVAL` to 10000ms during low usage
-- Use Railway's sleep feature for dev environments
-
-Ready to process hundreds of images at once!
+The plan was right - we just implemented it backwards!

@@ -52,45 +52,16 @@ export interface BatchAnalysisJob {
 
 export const bulkUploadService = {
   /**
-   * Upload files to processing worker and get CDN URLs
+   * STEP 1: Analyze file buffers for barcodes BEFORE uploading
+   * Sends actual file buffers to analysis worker for barcode scanning
    */
-  async uploadFiles(files: File[], onProgress?: (current: number, total: number) => void): Promise<UploadedFileInfo[]> {
+  async analyzeBatch(files: File[], onProgress?: (current: number, total: number) => void): Promise<AnalysisResults & { fileMap: Map<string, File> }> {
     const formData = new FormData();
+
+    // Send actual file buffers for barcode scanning
     files.forEach(file => {
       formData.append('files', file);
     });
-
-    const response = await fetch(`${WORKER_URL}/api/bulk-upload`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Bulk upload failed');
-    }
-
-    const data = await response.json();
-    return data.uploadedFiles || [];
-  },
-
-  /**
-   * Send uploaded files to analysis worker for barcode scanning
-   */
-  async analyzeBatch(uploadedFiles: UploadedFileInfo[]): Promise<AnalysisResults> {
-    const formData = new FormData();
-
-    // Send metadata instead of actual files (files are already on B2)
-    const metadata = uploadedFiles.map(f => ({
-      fileName: f.fileName,
-      assetGroupId: f.assetGroupId,
-    }));
-
-    formData.append('metadata', JSON.stringify(metadata));
-
-    // Note: For actual barcode scanning, we'd need to download and send the images
-    // For now, we'll use a simpler approach where analysis worker returns mock data
-    // In production, you'd fetch the images from CDN and send to analysis worker
 
     const response = await fetch(`${ANALYSIS_WORKER_URL}/api/analyze-batch`, {
       method: 'POST',
@@ -103,18 +74,26 @@ export const bulkUploadService = {
     }
 
     const data = await response.json();
+
+    // Create a map of fileName to File object for later upload
+    const fileMap = new Map<string, File>();
+    files.forEach(file => {
+      fileMap.set(file.name, file);
+    });
+
     return {
       grouped: data.grouped || [],
       ungrouped: data.ungrouped || [],
       errors: data.errors || [],
+      fileMap,
     };
   },
 
   /**
-   * Create batch analysis job in database
+   * STEP 2: Create batch job in database with analysis results (no uploads yet)
    */
   async createBatchJob(
-    uploadedFiles: UploadedFileInfo[],
+    files: File[],
     analysisResults: AnalysisResults
   ): Promise<string> {
     const { data: { user } } = await supabase.auth.getUser();
@@ -128,8 +107,8 @@ export const bulkUploadService = {
       .insert({
         user_id: user.id,
         status: 'ready_for_review',
-        total_files: uploadedFiles.length,
-        uploaded_files: uploadedFiles,
+        total_files: files.length,
+        uploaded_files: [], // Empty until confirmation
         analysis_results: analysisResults,
         user_adjustments: {},
         analyzed_at: new Date().toISOString(),
@@ -143,6 +122,46 @@ export const bulkUploadService = {
     }
 
     return data.id;
+  },
+
+  /**
+   * STEP 3: After user confirms, upload files to processing worker
+   * Only uploads the files user confirmed in the modal
+   */
+  async uploadConfirmedFiles(
+    files: File[],
+    onProgress?: (current: number, total: number) => void
+  ): Promise<UploadedFileInfo[]> {
+    const CHUNK_SIZE = 5; // Upload 5 files at a time
+    const uploadedFiles: UploadedFileInfo[] = [];
+
+    for (let i = 0; i < files.length; i += CHUNK_SIZE) {
+      const chunk = files.slice(i, i + CHUNK_SIZE);
+      const formData = new FormData();
+
+      chunk.forEach(file => {
+        formData.append('files', file);
+      });
+
+      const response = await fetch(`${WORKER_URL}/api/bulk-upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Bulk upload failed');
+      }
+
+      const data = await response.json();
+      uploadedFiles.push(...(data.uploadedFiles || []));
+
+      if (onProgress) {
+        onProgress(Math.min(i + CHUNK_SIZE, files.length), files.length);
+      }
+    }
+
+    return uploadedFiles;
   },
 
   /**
@@ -162,20 +181,16 @@ export const bulkUploadService = {
   },
 
   /**
-   * Confirm batch and create inventory items
+   * STEP 4: After files uploaded, confirm batch and create inventory items
    */
   async confirmBatch(
     jobId: string,
+    uploadedFiles: UploadedFileInfo[],
     groups: Array<{
       inv_number: string;
       files: Array<{
         fileName: string;
         assetGroupId: string;
-        cdnUrls: any;
-        fileSize: number;
-        mimeType: string;
-        width: number;
-        height: number;
       }>;
     }>
   ): Promise<{ created: string[]; errors: any[] }> {
@@ -185,13 +200,32 @@ export const bulkUploadService = {
       throw new Error('User not authenticated');
     }
 
-    // First, link files to database via processing worker
+    // Map uploaded files to groups
+    const fileMap = new Map(uploadedFiles.map(f => [f.fileName, f]));
+
+    const groupsWithMetadata = groups.map(group => ({
+      ...group,
+      files: group.files.map(f => {
+        const uploaded = fileMap.get(f.fileName);
+        return {
+          ...f,
+          cdnUrls: uploaded?.cdnUrls,
+          fileSize: uploaded?.fileSize,
+          mimeType: uploaded?.mimeType,
+          width: uploaded?.width,
+          height: uploaded?.height,
+          assetGroupId: uploaded?.assetGroupId || f.assetGroupId,
+        };
+      }),
+    }));
+
+    // Link files to database via processing worker
     const response = await fetch(`${WORKER_URL}/api/bulk-process`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ groups }),
+      body: JSON.stringify({ groups: groupsWithMetadata }),
     });
 
     if (!response.ok) {
@@ -245,18 +279,31 @@ export const bulkUploadService = {
         // Update auction_files to link to this item
         const assetGroupIds = group.files.map(f => f.assetGroupId);
 
-        const { error: linkError } = await supabase
+        logger.info('[BULK] Linking files to item', {
+          inv_number: group.inv_number,
+          item_id: newItem.id,
+          assetGroupIds,
+        });
+
+        const { data: linkedFiles, error: linkError } = await supabase
           .from('auction_files')
           .update({ item_id: newItem.id })
-          .in('asset_group_id', assetGroupIds);
+          .in('asset_group_id', assetGroupIds)
+          .select('id, asset_group_id');
 
         if (linkError) {
+          console.error('[BULK] Failed to link files:', linkError);
           errors.push({
             inv_number: group.inv_number,
             error: `Item created but failed to link files: ${linkError.message}`,
           });
           continue;
         }
+
+        console.log('[BULK] Files linked successfully:', {
+          inv_number: group.inv_number,
+          linked_count: linkedFiles?.length || 0,
+        });
 
         createdItems.push(newItem.id);
       } catch (error) {
@@ -267,12 +314,13 @@ export const bulkUploadService = {
       }
     }
 
-    // Update batch job status
+    // Update batch job with uploaded files and confirm status
     const { error: updateError } = await supabase
       .from('batch_analysis_jobs')
       .update({
         status: 'confirmed',
         confirmed_at: new Date().toISOString(),
+        uploaded_files: uploadedFiles,
       })
       .eq('id', jobId);
 
@@ -284,25 +332,10 @@ export const bulkUploadService = {
   },
 
   /**
-   * Cancel batch job and cleanup files
+   * Cancel batch job - no files to cleanup since nothing uploaded yet
    */
-  async cancelBatch(jobId: string, assetGroupIds: string[]): Promise<void> {
-    // Delete files from B2
-    if (assetGroupIds.length > 0) {
-      try {
-        await fetch(`${WORKER_URL}/api/delete-batch-files`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ assetGroupIds }),
-        });
-      } catch (error) {
-        console.warn('Failed to delete batch files:', error);
-      }
-    }
-
-    // Update batch job status
+  async cancelBatch(jobId: string): Promise<void> {
+    // Update batch job status (no files to delete since we haven't uploaded yet)
     const { error } = await supabase
       .from('batch_analysis_jobs')
       .update({

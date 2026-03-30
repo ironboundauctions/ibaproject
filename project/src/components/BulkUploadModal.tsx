@@ -19,6 +19,7 @@ type UploadStage = 'select' | 'uploading' | 'analyzing' | 'confirm' | 'processin
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
   const [stage, setStage] = useState<UploadStage>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileInfo[]>([]);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResults>({
     grouped: [],
@@ -29,6 +30,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const [ungrouped, setUngrouped] = useState<GroupedFile[]>([]);
   const [error, setError] = useState<string>('');
   const [jobId, setJobId] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [newGroupNumber, setNewGroupNumber] = useState<string>('');
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
@@ -39,12 +41,14 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const resetModal = () => {
     setStage('select');
     setSelectedFiles([]);
+    setFileMap(new Map());
     setUploadedFiles([]);
     setAnalysisResults({ grouped: [], ungrouped: [], errors: [] });
     setGroups([]);
     setUngrouped([]);
     setError('');
     setJobId('');
+    setUploadProgress({ current: 0, total: 0 });
     setExpandedGroups(new Set());
     setNewGroupNumber('');
     setShowNewGroupInput(false);
@@ -64,34 +68,29 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setSelectedFiles(imageFiles);
   };
 
-  const handleUploadAndAnalyze = async () => {
+  const handleAnalyze = async () => {
     if (selectedFiles.length === 0) return;
 
-    setStage('uploading');
+    setStage('analyzing');
     setError('');
 
     try {
-      // Upload files to processing worker
-      const uploaded = await bulkUploadService.uploadFiles(selectedFiles);
-      setUploadedFiles(uploaded);
-
-      setStage('analyzing');
-
-      // Analyze for barcodes
-      const analysis = await bulkUploadService.analyzeBatch(uploaded);
+      // STEP 1: Analyze file buffers for barcodes BEFORE upload
+      const analysis = await bulkUploadService.analyzeBatch(selectedFiles);
       setAnalysisResults(analysis);
+      setFileMap(analysis.fileMap);
 
       // Initialize groups and ungrouped from analysis
       setGroups(analysis.grouped);
       setUngrouped(analysis.ungrouped);
 
-      // Create batch job
-      const batchJobId = await bulkUploadService.createBatchJob(uploaded, analysis);
+      // Create batch job (no files uploaded yet)
+      const batchJobId = await bulkUploadService.createBatchJob(selectedFiles, analysis);
       setJobId(batchJobId);
 
       setStage('confirm');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
+      setError(err instanceof Error ? err.message : 'Analysis failed');
       setStage('select');
     }
   };
@@ -164,35 +163,33 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       return;
     }
 
-    setStage('processing');
+    setStage('uploading');
     setError('');
 
     try {
-      // Delete ungrouped files from storage
-      if (ungrouped.length > 0) {
-        const ungroupedIds = ungrouped.map(f => f.assetGroupId);
-        await bulkUploadService.deleteBatchFiles(ungroupedIds);
-      }
+      // STEP 2: Get confirmed files to upload (only files in groups)
+      const confirmedFileNames = new Set<string>();
+      groups.forEach(group => {
+        group.files.forEach(file => {
+          confirmedFileNames.add(file.fileName);
+        });
+      });
 
-      // Prepare groups with full file information
-      const groupsWithFullInfo = groups.map(group => ({
-        inv_number: group.inv_number,
-        files: group.files.map(file => {
-          const uploadedFile = uploadedFiles.find(u => u.assetGroupId === file.assetGroupId);
-          return {
-            fileName: file.fileName,
-            assetGroupId: file.assetGroupId,
-            cdnUrls: uploadedFile?.cdnUrls || {},
-            fileSize: uploadedFile?.fileSize || 0,
-            mimeType: uploadedFile?.mimeType || 'image/webp',
-            width: uploadedFile?.width || 0,
-            height: uploadedFile?.height || 0,
-          };
-        }),
-      }));
+      const filesToUpload = Array.from(confirmedFileNames)
+        .map(name => fileMap.get(name))
+        .filter((f): f is File => f !== undefined);
 
-      // Confirm batch and create inventory items
-      const result = await bulkUploadService.confirmBatch(jobId, groupsWithFullInfo);
+      // STEP 3: Upload confirmed files to B2
+      const uploaded = await bulkUploadService.uploadConfirmedFiles(
+        filesToUpload,
+        (current, total) => setUploadProgress({ current, total })
+      );
+      setUploadedFiles(uploaded);
+
+      setStage('processing');
+
+      // STEP 4: Confirm batch and create inventory items
+      const result = await bulkUploadService.confirmBatch(jobId, uploaded, groups);
 
       if (result.errors.length > 0) {
         console.warn('Some items failed to create:', result.errors);
@@ -211,9 +208,9 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   };
 
   const handleCancel = async () => {
-    if (uploadedFiles.length > 0) {
-      const allAssetGroupIds = uploadedFiles.map(f => f.assetGroupId);
-      await bulkUploadService.cancelBatch(jobId, allAssetGroupIds);
+    // No files uploaded yet, just cancel the batch job
+    if (jobId) {
+      await bulkUploadService.cancelBatch(jobId);
     }
     onClose();
     resetModal();
@@ -308,21 +305,13 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                     ))}
                   </div>
                   <button
-                    onClick={handleUploadAndAnalyze}
+                    onClick={handleAnalyze}
                     className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 transition-colors"
                   >
-                    Upload and Analyze {selectedFiles.length} Images
+                    Analyze {selectedFiles.length} Images
                   </button>
                 </div>
               )}
-            </div>
-          )}
-
-          {stage === 'uploading' && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-              <p className="text-lg font-medium text-gray-900 mb-2">Uploading images...</p>
-              <p className="text-sm text-gray-500">Processing and uploading files to storage</p>
             </div>
           )}
 
@@ -330,7 +319,17 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
               <p className="text-lg font-medium text-gray-900 mb-2">Scanning for barcodes...</p>
-              <p className="text-sm text-gray-500">Detecting inventory numbers from images</p>
+              <p className="text-sm text-gray-500">Analyzing images for inventory numbers (no upload yet)</p>
+            </div>
+          )}
+
+          {stage === 'uploading' && (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
+              <p className="text-lg font-medium text-gray-900 mb-2">Uploading confirmed files...</p>
+              <p className="text-sm text-gray-500">
+                {uploadProgress.current} of {uploadProgress.total} files uploaded
+              </p>
             </div>
           )}
 
@@ -347,7 +346,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
               <div className="grid grid-cols-3 gap-4">
                 <div className="bg-gray-50 p-4 rounded-lg">
                   <p className="text-sm text-gray-600">Total Files</p>
-                  <p className="text-2xl font-bold text-gray-900">{uploadedFiles.length}</p>
+                  <p className="text-2xl font-bold text-gray-900">{selectedFiles.length}</p>
                 </div>
                 <div className="bg-green-50 p-4 rounded-lg">
                   <p className="text-sm text-green-600">Grouped</p>
@@ -395,21 +394,32 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
                       {expandedGroups.has(group.inv_number) && (
                         <div className="p-4 grid grid-cols-4 gap-4">
-                          {group.files.map((file) => (
-                            <div key={file.assetGroupId} className="relative group">
-                              <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
-                                <p className="text-xs text-gray-500 text-center px-2">
-                                  {file.fileName}
-                                </p>
+                          {group.files.map((file) => {
+                            const originalFile = fileMap.get(file.fileName);
+                            return (
+                              <div key={file.assetGroupId} className="relative group">
+                                {originalFile ? (
+                                  <img
+                                    src={URL.createObjectURL(originalFile)}
+                                    alt={file.fileName}
+                                    className="w-full h-24 object-cover rounded-lg"
+                                  />
+                                ) : (
+                                  <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
+                                    <p className="text-xs text-gray-500 text-center px-2">
+                                      {file.fileName}
+                                    </p>
+                                  </div>
+                                )}
+                                <button
+                                  onClick={() => handleRemoveFromGroup(groupIndex, file.assetGroupId)}
+                                  className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
                               </div>
-                              <button
-                                onClick={() => handleRemoveFromGroup(groupIndex, file.assetGroupId)}
-                                className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -463,30 +473,41 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                   )}
 
                   <div className="grid grid-cols-4 gap-4">
-                    {ungrouped.map((file) => (
-                      <div
-                        key={file.assetGroupId}
-                        className={`relative group cursor-pointer ${
-                          selectedUngrouped.has(file.assetGroupId) ? 'ring-2 ring-blue-500' : ''
-                        }`}
-                        onClick={() => toggleUngroupedSelected(file.assetGroupId)}
-                      >
-                        <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
-                          <p className="text-xs text-gray-500 text-center px-2">
-                            {file.fileName}
-                          </p>
-                        </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteUngrouped(file.assetGroupId);
-                          }}
-                          className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                    {ungrouped.map((file) => {
+                      const originalFile = fileMap.get(file.fileName);
+                      return (
+                        <div
+                          key={file.assetGroupId}
+                          className={`relative group cursor-pointer ${
+                            selectedUngrouped.has(file.assetGroupId) ? 'ring-2 ring-blue-500' : ''
+                          }`}
+                          onClick={() => toggleUngroupedSelected(file.assetGroupId)}
                         >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
+                          {originalFile ? (
+                            <img
+                              src={URL.createObjectURL(originalFile)}
+                              alt={file.fileName}
+                              className="w-full h-24 object-cover rounded-lg"
+                            />
+                          ) : (
+                            <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
+                              <p className="text-xs text-gray-500 text-center px-2">
+                                {file.fileName}
+                              </p>
+                            </div>
+                          )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteUngrouped(file.assetGroupId);
+                            }}
+                            className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
