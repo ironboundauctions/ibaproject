@@ -64,6 +64,11 @@ export class BarcodeScanner {
         { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
         { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
         { name: 'enhanced', process: (buf: Buffer) => sharp(buf).resize({ width: 1200, height: 1200, fit: 'inside' }).grayscale().normalise().sharpen().toBuffer() },
+        // High contrast strategies
+        { name: 'high-contrast', process: (buf: Buffer) => sharp(buf).grayscale().normalise().linear(1.5, -(128 * 0.5)).toBuffer() },
+        { name: 'threshold', process: (buf: Buffer) => sharp(buf).grayscale().normalise().threshold(128).toBuffer() },
+        // Larger size for small barcodes
+        { name: 'upscaled', process: (buf: Buffer) => sharp(buf).resize({ width: 2400, height: 2400, fit: 'inside' }).grayscale().normalise().sharpen({ sigma: 2 }).toBuffer() },
       ];
 
       for (const strategy of strategies) {
