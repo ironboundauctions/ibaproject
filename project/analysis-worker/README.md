@@ -1,41 +1,33 @@
-# Analysis Worker
+# Barcode Analysis Worker
 
-Background worker service for processing bulk image analysis jobs using IronDrive.
+REST API service for scanning barcodes and QR codes from images during bulk upload.
+
+## Purpose
+
+This worker scans images for barcodes/QR codes BEFORE they are uploaded to storage. It helps automatically group images by inventory number during the bulk upload process.
+
+**Important**: IronDrive is just a file picker (like Dropbox or PC upload) - NOT an API service. All barcode scanning happens locally in this worker using ZXing and jsQR libraries.
 
 ## Features
 
-- Polls for pending batch analysis jobs
-- Processes images in configurable batch sizes
-- Supports concurrent job processing
-- Real-time progress updates
-- Graceful shutdown handling
+- Scans images for barcodes and QR codes
+- Supports multiple barcode formats (CODE_128, CODE_39, EAN, UPC, QR, etc.)
+- Multiple detection strategies for better accuracy
+- Processes batches of images efficiently
+- Returns grouping suggestions based on detected inventory numbers
 
 ## Environment Variables
 
-Required environment variables:
+Optional environment variables:
 
 ```env
-SUPABASE_URL=your_supabase_url
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-IRONDRIVE_API_URL=your_irondrive_api_url
-PORT=3001
-POLL_INTERVAL=5000
-MAX_CONCURRENT_JOBS=3
-BATCH_SIZE=10
+PORT=8080
 ```
 
 ## Railway Deployment
 
 1. Create a new Railway project
-2. Add the following environment variables in Railway:
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `IRONDRIVE_API_URL`
-   - `PORT` (optional, defaults to 3001)
-   - `POLL_INTERVAL` (optional, defaults to 5000ms)
-   - `MAX_CONCURRENT_JOBS` (optional, defaults to 3)
-   - `BATCH_SIZE` (optional, defaults to 10)
-
+2. Add the `PORT` environment variable (optional, defaults to 8080)
 3. Deploy from the `analysis-worker` directory
 
 ## Local Development
@@ -43,11 +35,6 @@ BATCH_SIZE=10
 ```bash
 # Install dependencies
 npm install
-
-# Copy environment template
-cp .env.example .env
-
-# Edit .env with your credentials
 
 # Run in development mode
 npm run dev
@@ -59,50 +46,52 @@ npm run build
 npm start
 ```
 
-## Health Check
+## API Endpoints
 
-The worker exposes a health endpoint:
+### POST /api/analyze-batch
 
-```bash
-curl http://localhost:3001/health
+Analyzes a batch of images for barcodes.
+
+**Request**: multipart/form-data with files
+**Response**:
+```json
+{
+  "grouped": [
+    {
+      "inv_number": "ABC123",
+      "files": [
+        { "fileName": "img1.jpg", "assetGroupId": "temp_123_0" },
+        { "fileName": "img2.jpg", "assetGroupId": "temp_123_1" }
+      ]
+    }
+  ],
+  "ungrouped": [
+    { "fileName": "img3.jpg", "assetGroupId": "temp_123_2" }
+  ],
+  "errors": []
+}
 ```
 
-Response:
+### GET /health
+
+Health check endpoint.
+
+**Response**:
 ```json
 {
   "status": "healthy",
-  "timestamp": "2026-03-27T...",
-  "activeJobs": 2,
-  "maxConcurrentJobs": 3
+  "timestamp": "2026-03-31T...",
+  "service": "barcode-analysis-worker"
 }
 ```
 
 ## How It Works
 
-1. Worker polls database every `POLL_INTERVAL` ms for pending jobs
-2. Claims up to `MAX_CONCURRENT_JOBS` at a time
-3. For each job:
-   - Updates status to "analyzing"
-   - Processes files in batches of `BATCH_SIZE`
-   - Calls IronDrive API for each batch
-   - Updates progress after each batch
-   - Sets status to "completed" or "failed" when done
-4. Releases job slot and repeats
-
-## Monitoring
-
-Check worker status:
-
-```bash
-curl http://localhost:3001/status
-```
-
-Response:
-```json
-{
-  "activeJobs": 2,
-  "maxConcurrentJobs": 3,
-  "pollInterval": 5000,
-  "batchSize": 10
-}
-```
+1. Frontend sends image file buffers to `/api/analyze-batch`
+2. Worker scans each image using:
+   - ZXing library (for various 1D/2D barcodes)
+   - jsQR library (QR code fallback)
+   - Multiple preprocessing strategies (original, grayscale, enhanced)
+3. Groups images by detected barcode value
+4. Returns grouping suggestions to frontend
+5. User reviews and confirms groups before upload

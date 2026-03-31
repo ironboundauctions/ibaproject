@@ -11,13 +11,7 @@ import {
   NotFoundException,
 } from '@zxing/library';
 import { logger } from '../logger.js';
-
-export interface BarcodeResult {
-  fileName: string;
-  assetGroupId: string;
-  barcodeValue?: string;
-  error?: string;
-}
+import type { BarcodeResult } from '../types.js';
 
 export class BarcodeScanner {
   private zxingReader: MultiFormatReader;
@@ -56,9 +50,20 @@ export class BarcodeScanner {
         };
       }
 
+      // Get image info for debugging
+      const imageInfo = await sharp(buffer).metadata();
+      logger.debug('Processing image for barcode detection', {
+        fileName,
+        width: imageInfo.width,
+        height: imageInfo.height,
+        format: imageInfo.format,
+        size: buffer.length,
+      });
+
       const strategies = [
         { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
         { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
+        { name: 'enhanced', process: (buf: Buffer) => sharp(buf).resize({ width: 1200, height: 1200, fit: 'inside' }).grayscale().normalise().sharpen().toBuffer() },
       ];
 
       for (const strategy of strategies) {
@@ -67,6 +72,12 @@ export class BarcodeScanner {
 
           const pngBuffer = await sharp(processedBuffer).png().toBuffer();
           const img = await loadImage(pngBuffer);
+
+          logger.debug(`Trying strategy: ${strategy.name}`, {
+            fileName,
+            imageWidth: img.width,
+            imageHeight: img.height,
+          });
 
           const canvas = createCanvas(img.width, img.height);
           const ctx = canvas.getContext('2d');
@@ -115,6 +126,7 @@ export class BarcodeScanner {
       }
 
       // Fallback to jsQR for QR codes
+      logger.debug('Trying jsQR fallback', { fileName });
       const { data, info } = await sharp(buffer)
         .ensureAlpha()
         .raw()
@@ -139,7 +151,7 @@ export class BarcodeScanner {
       }
 
       // No barcode found - this is normal, not an error
-      logger.debug('No barcode found in image', { fileName, assetGroupId });
+      logger.debug('No barcode found in image after all strategies', { fileName, assetGroupId });
       return {
         fileName,
         assetGroupId,
