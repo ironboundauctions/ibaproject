@@ -62,7 +62,21 @@ export class BarcodeScanner {
 
       const strategies = [
         { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
+        { name: 'grayscale', process: (buf: Buffer) => sharp(buf).grayscale().toBuffer() },
         { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
+        // Focused on barcode area - crop bottom third where barcodes typically are
+        { name: 'bottom-crop-enhanced', process: async (buf: Buffer) => {
+          const metadata = await sharp(buf).metadata();
+          const height = metadata.height || 1200;
+          const width = metadata.width || 1600;
+          return sharp(buf)
+            .extract({ left: 0, top: Math.floor(height * 0.4), width, height: Math.floor(height * 0.6) })
+            .resize({ width: 2000, fit: 'inside' })
+            .grayscale()
+            .normalise()
+            .sharpen()
+            .toBuffer();
+        }},
         { name: 'enhanced', process: (buf: Buffer) => sharp(buf).resize({ width: 1200, height: 1200, fit: 'inside' }).grayscale().normalise().sharpen().toBuffer() },
         // High contrast strategies
         { name: 'high-contrast', process: (buf: Buffer) => sharp(buf).grayscale().normalise().linear(1.5, -(128 * 0.5)).toBuffer() },
@@ -89,17 +103,14 @@ export class BarcodeScanner {
           ctx.drawImage(img, 0, 0);
 
           const imageData = ctx.getImageData(0, 0, img.width, img.height);
-          const rgbaData = new Uint8ClampedArray(imageData.data);
+          const rgbaData = imageData.data;
 
-          const rgbData = new Uint8ClampedArray(img.width * img.height * 4);
-          for (let i = 0; i < rgbaData.length; i += 4) {
-            rgbData[i] = rgbaData[i];
-            rgbData[i + 1] = rgbaData[i + 1];
-            rgbData[i + 2] = rgbaData[i + 2];
-            rgbData[i + 3] = 255;
-          }
-
-          const luminanceSource = new RGBLuminanceSource(rgbData, img.width, img.height);
+          // Create proper RGBA array for RGBLuminanceSource
+          const luminanceSource = new RGBLuminanceSource(
+            new Uint8ClampedArray(rgbaData),
+            img.width,
+            img.height
+          );
           const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
 
           const result = this.zxingReader.decode(binaryBitmap);
@@ -122,9 +133,11 @@ export class BarcodeScanner {
           }
         } catch (zxingError) {
           if (!(zxingError instanceof NotFoundException)) {
-            logger.debug(`ZXing detection failed with strategy ${strategy.name}`, {
+            logger.warn(`ZXing detection error with strategy ${strategy.name}`, {
               fileName,
+              strategy: strategy.name,
               error: zxingError instanceof Error ? zxingError.message : String(zxingError),
+              stack: zxingError instanceof Error ? zxingError.stack : undefined,
             });
           }
         }
