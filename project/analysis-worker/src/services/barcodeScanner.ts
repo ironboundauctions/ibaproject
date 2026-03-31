@@ -105,6 +105,13 @@ export class BarcodeScanner {
           const imageData = ctx.getImageData(0, 0, img.width, img.height);
           const rgbaData = imageData.data;
 
+          // Log first few pixels to debug
+          logger.debug('First 20 pixel values', {
+            fileName,
+            pixels: Array.from(rgbaData.slice(0, 20)),
+            totalLength: rgbaData.length,
+          });
+
           // Create proper RGBA array for RGBLuminanceSource
           const luminanceSource = new RGBLuminanceSource(
             new Uint8ClampedArray(rgbaData),
@@ -113,7 +120,20 @@ export class BarcodeScanner {
           );
           const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
 
+          logger.debug('About to decode with ZXing', {
+            fileName,
+            strategy: strategy.name,
+            imageWidth: img.width,
+            imageHeight: img.height,
+          });
+
           const result = this.zxingReader.decode(binaryBitmap);
+
+          logger.debug('ZXing decode succeeded', {
+            fileName,
+            strategy: strategy.name,
+            resultText: result?.getText(),
+          });
 
           if (result && result.getText()) {
             const barcodeValue = result.getText().trim();
