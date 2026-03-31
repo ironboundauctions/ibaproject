@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ['nodejs_20']
+nixPkgs = ['nodejs_20', 'cairo', 'pango', 'libjpeg', 'giflib', 'librsvg', 'pkg-config', 'pixman']
 
 [phases.install]
 cmds = ['npm ci']
