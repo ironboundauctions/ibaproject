@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical } from 'lucide-react';
+import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical, Zap } from 'lucide-react';
 import {
   bulkUploadService,
   type UploadedFileInfo,
@@ -7,6 +7,7 @@ import {
   type GroupedFile,
   type AnalysisResults,
 } from '../services/bulkUploadService';
+import { ImageReducer, type ReducedImage } from '../utils/imageReduction';
 
 interface BulkUploadModalProps {
   isOpen: boolean;
@@ -14,7 +15,7 @@ interface BulkUploadModalProps {
   onSuccess: () => void;
 }
 
-type UploadStage = 'select' | 'uploading' | 'analyzing' | 'confirm' | 'processing' | 'complete';
+type UploadStage = 'select' | 'reducing' | 'uploading' | 'analyzing' | 'confirm' | 'processing' | 'complete';
 
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
   const [stage, setStage] = useState<UploadStage>('select');
@@ -31,6 +32,12 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const [error, setError] = useState<string>('');
   const [jobId, setJobId] = useState<string>('');
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [reductionProgress, setReductionProgress] = useState<{ current: number; total: number; currentFile: string }>({
+    current: 0,
+    total: 0,
+    currentFile: ''
+  });
+  const [reductionStats, setReductionStats] = useState<{ originalTotal: number; reducedTotal: number; savingsPercent: number } | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [newGroupNumber, setNewGroupNumber] = useState<string>('');
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
@@ -49,6 +56,8 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setError('');
     setJobId('');
     setUploadProgress({ current: 0, total: 0 });
+    setReductionProgress({ current: 0, total: 0, currentFile: '' });
+    setReductionStats(null);
     setExpandedGroups(new Set());
     setNewGroupNumber('');
     setShowNewGroupInput(false);
@@ -71,20 +80,34 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const handleAnalyze = async () => {
     if (selectedFiles.length === 0) return;
 
-    setStage('analyzing');
     setError('');
 
     try {
-      // STEP 1: Analyze file buffers for barcodes BEFORE upload
-      const analysis = await bulkUploadService.analyzeBatch(selectedFiles);
-      setAnalysisResults(analysis);
-      setFileMap(analysis.fileMap);
+      setStage('reducing');
 
-      // Initialize groups and ungrouped from analysis
+      const reducedImages = await ImageReducer.reduceImagesForAnalysis(
+        selectedFiles,
+        (progress) => setReductionProgress(progress)
+      );
+
+      const stats = ImageReducer.calculateSavings(reducedImages);
+      setReductionStats(stats);
+
+      const reducedFiles = reducedImages.map(r => r.reducedFile);
+      const originalFileMap = new Map<string, File>();
+      reducedImages.forEach(r => {
+        originalFileMap.set(r.reducedFile.name, r.originalFile);
+      });
+
+      setStage('analyzing');
+
+      const analysis = await bulkUploadService.analyzeBatch(reducedFiles);
+      setAnalysisResults(analysis);
+      setFileMap(originalFileMap);
+
       setGroups(analysis.grouped);
       setUngrouped(analysis.ungrouped);
 
-      // Create batch job (no files uploaded yet)
       const batchJobId = await bulkUploadService.createBatchJob(selectedFiles, analysis);
       setJobId(batchJobId);
 
@@ -315,11 +338,37 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             </div>
           )}
 
+          {stage === 'reducing' && (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Zap className="w-12 h-12 text-yellow-600 mb-4" />
+              <p className="text-lg font-medium text-gray-900 mb-2">Optimizing images...</p>
+              <p className="text-sm text-gray-500 mb-4">
+                {reductionProgress.current} of {reductionProgress.total} images optimized
+              </p>
+              <div className="w-full max-w-md bg-gray-200 rounded-full h-2">
+                <div
+                  className="bg-yellow-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(reductionProgress.current / reductionProgress.total) * 100}%` }}
+                />
+              </div>
+              {reductionProgress.currentFile && (
+                <p className="text-xs text-gray-400 mt-2">{reductionProgress.currentFile}</p>
+              )}
+            </div>
+          )}
+
           {stage === 'analyzing' && (
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
               <p className="text-lg font-medium text-gray-900 mb-2">Scanning for barcodes...</p>
-              <p className="text-sm text-gray-500">Analyzing images for inventory numbers (no upload yet)</p>
+              <p className="text-sm text-gray-500">Analyzing optimized images for inventory numbers</p>
+              {reductionStats && (
+                <div className="mt-4 p-4 bg-green-50 rounded-lg">
+                  <p className="text-sm text-green-800">
+                    Saved {ImageReducer.formatBytes(reductionStats.originalTotal - reductionStats.reducedTotal)} ({Math.round(reductionStats.savingsPercent)}% reduction)
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

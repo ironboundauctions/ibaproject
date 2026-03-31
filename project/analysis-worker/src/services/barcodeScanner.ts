@@ -1,6 +1,15 @@
 import sharp from 'sharp';
 import jsQR from 'jsqr';
-import { BrowserMultiFormatReader, DecodeHintType, BarcodeFormat } from '@zxing/library';
+import { createCanvas, loadImage } from 'canvas';
+import {
+  BinaryBitmap,
+  HybridBinarizer,
+  MultiFormatReader,
+  RGBLuminanceSource,
+  DecodeHintType,
+  BarcodeFormat,
+  NotFoundException,
+} from '@zxing/library';
 import { logger } from '../logger.js';
 
 export interface BarcodeResult {
@@ -11,9 +20,11 @@ export interface BarcodeResult {
 }
 
 export class BarcodeScanner {
-  private zxingReader: BrowserMultiFormatReader;
+  private zxingReader: MultiFormatReader;
 
   constructor() {
+    this.zxingReader = new MultiFormatReader();
+
     const hints = new Map();
     const formats = [
       BarcodeFormat.CODE_128,
@@ -25,11 +36,13 @@ export class BarcodeScanner {
       BarcodeFormat.UPC_E,
       BarcodeFormat.QR_CODE,
       BarcodeFormat.DATA_MATRIX,
+      BarcodeFormat.ITF,
+      BarcodeFormat.CODABAR,
     ];
     hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
     hints.set(DecodeHintType.TRY_HARDER, true);
 
-    this.zxingReader = new BrowserMultiFormatReader(hints);
+    this.zxingReader.setHints(hints);
   }
 
   async scanImage(buffer: Buffer, fileName: string, assetGroupId: string): Promise<BarcodeResult> {
@@ -43,36 +56,62 @@ export class BarcodeScanner {
         };
       }
 
-      // Convert image to grayscale PNG for better barcode detection
-      const processedBuffer = await sharp(buffer)
-        .grayscale()
-        .normalise()
-        .png()
-        .toBuffer();
+      const strategies = [
+        { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
+        { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
+      ];
 
-      // Try ZXing first for all barcode types including 1D barcodes
-      try {
-        const base64 = `data:image/png;base64,${processedBuffer.toString('base64')}`;
-        const result = await this.zxingReader.decodeFromImageUrl(base64);
+      for (const strategy of strategies) {
+        try {
+          const processedBuffer = await strategy.process(buffer);
 
-        if (result && result.getText()) {
-          const barcodeValue = result.getText().trim();
-          logger.info('Barcode detected via ZXing', {
-            fileName,
-            assetGroupId,
-            barcodeValue,
-            format: result.getBarcodeFormat(),
-          });
+          const pngBuffer = await sharp(processedBuffer).png().toBuffer();
+          const img = await loadImage(pngBuffer);
 
-          return {
-            fileName,
-            assetGroupId,
-            barcodeValue,
-          };
+          const canvas = createCanvas(img.width, img.height);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+
+          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          const rgbaData = new Uint8ClampedArray(imageData.data);
+
+          const rgbData = new Uint8ClampedArray(img.width * img.height * 4);
+          for (let i = 0; i < rgbaData.length; i += 4) {
+            rgbData[i] = rgbaData[i];
+            rgbData[i + 1] = rgbaData[i + 1];
+            rgbData[i + 2] = rgbaData[i + 2];
+            rgbData[i + 3] = 255;
+          }
+
+          const luminanceSource = new RGBLuminanceSource(rgbData, img.width, img.height);
+          const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
+
+          const result = this.zxingReader.decode(binaryBitmap);
+
+          if (result && result.getText()) {
+            const barcodeValue = result.getText().trim();
+            logger.info('Barcode detected via ZXing', {
+              fileName,
+              assetGroupId,
+              barcodeValue,
+              format: BarcodeFormat[result.getBarcodeFormat()],
+              strategy: strategy.name,
+            });
+
+            return {
+              fileName,
+              assetGroupId,
+              barcodeValue,
+            };
+          }
+        } catch (zxingError) {
+          if (!(zxingError instanceof NotFoundException)) {
+            logger.debug(`ZXing detection failed with strategy ${strategy.name}`, {
+              fileName,
+              error: zxingError instanceof Error ? zxingError.message : String(zxingError),
+            });
+          }
         }
-      } catch (zxingError) {
-        // ZXing failed, try jsQR as fallback for QR codes
-        logger.debug('ZXing detection failed, trying jsQR', { fileName });
       }
 
       // Fallback to jsQR for QR codes
@@ -81,7 +120,9 @@ export class BarcodeScanner {
         .raw()
         .toBuffer({ resolveWithObject: true });
 
-      const qrResult = jsQR(new Uint8ClampedArray(data), info.width, info.height);
+      const qrResult = jsQR(new Uint8ClampedArray(data), info.width, info.height, {
+        inversionAttempts: 'attemptBoth',
+      });
 
       if (qrResult && qrResult.data) {
         logger.info('QR code detected via jsQR', {
