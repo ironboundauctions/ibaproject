@@ -4,6 +4,7 @@ import { createCanvas, loadImage } from 'canvas';
 import {
   BinaryBitmap,
   HybridBinarizer,
+  GlobalHistogramBinarizer,
   MultiFormatReader,
   RGBLuminanceSource,
   DecodeHintType,
@@ -61,104 +62,174 @@ export class BarcodeScanner {
       });
 
       const strategies = [
-        { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
-        { name: 'grayscale', process: (buf: Buffer) => sharp(buf).grayscale().toBuffer() },
-        { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
-        // Focused on barcode area - crop bottom third where barcodes typically are
-        { name: 'bottom-crop-enhanced', process: async (buf: Buffer) => {
+        // Start with very aggressive preprocessing for printed barcodes
+        { name: 'mega-upscale-sharp', process: (buf: Buffer) =>
+          sharp(buf)
+            .resize({ width: 3000, fit: 'inside' })
+            .grayscale()
+            .normalise()
+            .sharpen({ sigma: 3 })
+            .linear(2.0, -128)
+            .toBuffer()
+        },
+        { name: 'extreme-contrast', process: (buf: Buffer) =>
+          sharp(buf)
+            .grayscale()
+            .normalise()
+            .linear(3.0, -255)
+            .sharpen({ sigma: 2 })
+            .toBuffer()
+        },
+        { name: 'binary-adaptive', process: (buf: Buffer) =>
+          sharp(buf)
+            .resize({ width: 2000, fit: 'inside' })
+            .grayscale()
+            .normalise()
+            .threshold(140)
+            .toBuffer()
+        },
+        { name: 'inverted-high-contrast', process: (buf: Buffer) =>
+          sharp(buf)
+            .grayscale()
+            .normalise()
+            .negate()
+            .linear(2.0, -100)
+            .toBuffer()
+        },
+        // Bottom crop - where barcodes usually are on labels
+        { name: 'bottom-crop-mega', process: async (buf: Buffer) => {
           const metadata = await sharp(buf).metadata();
           const height = metadata.height || 1200;
           const width = metadata.width || 1600;
           return sharp(buf)
-            .extract({ left: 0, top: Math.floor(height * 0.4), width, height: Math.floor(height * 0.6) })
-            .resize({ width: 2000, fit: 'inside' })
+            .extract({ left: 0, top: Math.floor(height * 0.5), width, height: Math.floor(height * 0.5) })
+            .resize({ width: 3000, fit: 'inside' })
             .grayscale()
             .normalise()
-            .sharpen()
+            .sharpen({ sigma: 3 })
+            .linear(2.5, -150)
             .toBuffer();
         }},
-        { name: 'enhanced', process: (buf: Buffer) => sharp(buf).resize({ width: 1200, height: 1200, fit: 'inside' }).grayscale().normalise().sharpen().toBuffer() },
-        // High contrast strategies
-        { name: 'high-contrast', process: (buf: Buffer) => sharp(buf).grayscale().normalise().linear(1.5, -(128 * 0.5)).toBuffer() },
-        { name: 'threshold', process: (buf: Buffer) => sharp(buf).grayscale().normalise().threshold(128).toBuffer() },
-        // Larger size for small barcodes
-        { name: 'upscaled', process: (buf: Buffer) => sharp(buf).resize({ width: 2400, height: 2400, fit: 'inside' }).grayscale().normalise().sharpen({ sigma: 2 }).toBuffer() },
+        // Original simple strategies
+        { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
+        { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
+        { name: 'upscaled', process: (buf: Buffer) => sharp(buf).resize({ width: 2400, fit: 'inside' }).grayscale().normalise().sharpen({ sigma: 2 }).toBuffer() },
       ];
 
       for (const strategy of strategies) {
-        try {
-          const processedBuffer = await strategy.process(buffer);
+        // Try each strategy with 0, 90, 180, 270 degree rotations
+        const rotations = [0, 90, 180, 270];
 
-          const pngBuffer = await sharp(processedBuffer).png().toBuffer();
-          const img = await loadImage(pngBuffer);
+        for (const rotation of rotations) {
+          try {
+            let processedBuffer = await strategy.process(buffer);
 
-          logger.debug(`Trying strategy: ${strategy.name}`, {
-            fileName,
-            imageWidth: img.width,
-            imageHeight: img.height,
-          });
+            // Apply rotation if needed
+            if (rotation > 0) {
+              processedBuffer = await sharp(processedBuffer).rotate(rotation).toBuffer();
+            }
 
-          const canvas = createCanvas(img.width, img.height);
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
+            const pngBuffer = await sharp(processedBuffer).png().toBuffer();
+            const img = await loadImage(pngBuffer);
 
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
-          const rgbaData = imageData.data;
-
-          // Log first few pixels to debug
-          logger.debug('First 20 pixel values', {
-            fileName,
-            pixels: Array.from(rgbaData.slice(0, 20)),
-            totalLength: rgbaData.length,
-          });
-
-          // Create proper RGBA array for RGBLuminanceSource
-          const luminanceSource = new RGBLuminanceSource(
-            new Uint8ClampedArray(rgbaData),
-            img.width,
-            img.height
-          );
-          const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
-
-          logger.debug('About to decode with ZXing', {
-            fileName,
-            strategy: strategy.name,
-            imageWidth: img.width,
-            imageHeight: img.height,
-          });
-
-          const result = this.zxingReader.decode(binaryBitmap);
-
-          logger.debug('ZXing decode succeeded', {
-            fileName,
-            strategy: strategy.name,
-            resultText: result?.getText(),
-          });
-
-          if (result && result.getText()) {
-            const barcodeValue = result.getText().trim();
-            logger.info('Barcode detected via ZXing', {
+            logger.debug(`Trying strategy: ${strategy.name} with rotation: ${rotation}°`, {
               fileName,
-              assetGroupId,
-              barcodeValue,
-              format: BarcodeFormat[result.getBarcodeFormat()],
-              strategy: strategy.name,
+              imageWidth: img.width,
+              imageHeight: img.height,
             });
 
-            return {
-              fileName,
-              assetGroupId,
-              barcodeValue,
-            };
-          }
-        } catch (zxingError) {
-          if (!(zxingError instanceof NotFoundException)) {
-            logger.warn(`ZXing detection error with strategy ${strategy.name}`, {
-              fileName,
-              strategy: strategy.name,
-              error: zxingError instanceof Error ? zxingError.message : String(zxingError),
-              stack: zxingError instanceof Error ? zxingError.stack : undefined,
-            });
+            // Use Sharp to get raw pixel data directly instead of canvas
+            const rawData = await sharp(processedBuffer)
+              .ensureAlpha()
+              .raw()
+              .toBuffer();
+
+            // Log first few pixels to debug (only for first rotation to reduce log spam)
+            if (rotation === 0) {
+              logger.debug('Raw pixel data for ZXing', {
+                fileName,
+                bufferLength: rawData.length,
+                expectedLength: img.width * img.height * 4,
+                firstPixels: Array.from(rawData.slice(0, 20)),
+              });
+            }
+
+            // Create luminance source - RGBLuminanceSource expects RGBA interleaved data
+            const luminanceSource = new RGBLuminanceSource(
+              new Uint8ClampedArray(rawData),
+              img.width,
+              img.height
+            );
+
+            // Try BOTH binarizers - GlobalHistogram is often better for 1D barcodes
+            const binarizers = [
+              { name: 'GlobalHistogram', create: () => new GlobalHistogramBinarizer(luminanceSource) },
+              { name: 'Hybrid', create: () => new HybridBinarizer(luminanceSource) },
+            ];
+
+            for (const binarizer of binarizers) {
+              try {
+                const binaryBitmap = new BinaryBitmap(binarizer.create());
+
+                logger.debug('About to decode with ZXing', {
+                  fileName,
+                  strategy: strategy.name,
+                  rotation,
+                  binarizer: binarizer.name,
+                  imageWidth: img.width,
+                  imageHeight: img.height,
+                });
+
+                const result = this.zxingReader.decode(binaryBitmap);
+
+                logger.debug('ZXing decode succeeded', {
+                  fileName,
+                  strategy: strategy.name,
+                  rotation,
+                  binarizer: binarizer.name,
+                  resultText: result?.getText(),
+                });
+
+                if (result && result.getText()) {
+                  const barcodeValue = result.getText().trim();
+                  logger.info('Barcode detected via ZXing', {
+                    fileName,
+                    assetGroupId,
+                    barcodeValue,
+                    format: BarcodeFormat[result.getBarcodeFormat()],
+                    strategy: strategy.name,
+                    rotation,
+                    binarizer: binarizer.name,
+                  });
+
+                  return {
+                    fileName,
+                    assetGroupId,
+                    barcodeValue,
+                  };
+                }
+              } catch (binarizerError) {
+                if (!(binarizerError instanceof NotFoundException)) {
+                  logger.warn(`ZXing detection error with ${binarizer.name}`, {
+                    fileName,
+                    strategy: strategy.name,
+                    rotation,
+                    binarizer: binarizer.name,
+                    error: binarizerError instanceof Error ? binarizerError.message : String(binarizerError),
+                  });
+                }
+              }
+            }
+          } catch (zxingError) {
+            if (!(zxingError instanceof NotFoundException)) {
+              logger.warn(`ZXing detection error with strategy ${strategy.name}, rotation ${rotation}°`, {
+                fileName,
+                strategy: strategy.name,
+                rotation,
+                error: zxingError instanceof Error ? zxingError.message : String(zxingError),
+                stack: zxingError instanceof Error ? zxingError.stack : undefined,
+              });
+            }
           }
         }
       }
