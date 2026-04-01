@@ -1,43 +1,13 @@
 import sharp from 'sharp';
 import jsQR from 'jsqr';
 import { createCanvas, loadImage } from 'canvas';
-import {
-  BinaryBitmap,
-  HybridBinarizer,
-  GlobalHistogramBinarizer,
-  MultiFormatReader,
-  RGBLuminanceSource,
-  DecodeHintType,
-  BarcodeFormat,
-  NotFoundException,
-} from '@zxing/library';
+import Quagga from '@ericblade/quagga2';
 import { logger } from '../logger.js';
 import type { BarcodeResult } from '../types.js';
 
 export class BarcodeScanner {
-  private zxingReader: MultiFormatReader;
-
   constructor() {
-    this.zxingReader = new MultiFormatReader();
-
-    const hints = new Map();
-    const formats = [
-      BarcodeFormat.CODE_128,
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.CODE_93,
-      BarcodeFormat.EAN_13,
-      BarcodeFormat.EAN_8,
-      BarcodeFormat.UPC_A,
-      BarcodeFormat.UPC_E,
-      BarcodeFormat.QR_CODE,
-      BarcodeFormat.DATA_MATRIX,
-      BarcodeFormat.ITF,
-      BarcodeFormat.CODABAR,
-    ];
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
-    hints.set(DecodeHintType.TRY_HARDER, true);
-
-    this.zxingReader.setHints(hints);
+    // Quagga doesn't need initialization
   }
 
   async scanImage(buffer: Buffer, fileName: string, assetGroupId: string): Promise<BarcodeResult> {
@@ -138,98 +108,98 @@ export class BarcodeScanner {
               imageHeight: img.height,
             });
 
-            // Use Sharp to get raw pixel data directly instead of canvas
-            const rawData = await sharp(processedBuffer)
-              .ensureAlpha()
-              .raw()
-              .toBuffer();
+            const canvas = createCanvas(img.width, img.height);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, img.width, img.height);
 
-            // Log first few pixels to debug (only for first rotation to reduce log spam)
             if (rotation === 0) {
-              logger.debug('Raw pixel data for ZXing', {
+              logger.debug('Canvas ImageData for detection', {
                 fileName,
-                bufferLength: rawData.length,
-                expectedLength: img.width * img.height * 4,
-                firstPixels: Array.from(rawData.slice(0, 20)),
+                dataLength: imageData.data.length,
+                width: imageData.width,
+                height: imageData.height,
               });
             }
 
-            // Create luminance source - RGBLuminanceSource expects RGBA interleaved data
-            const luminanceSource = new RGBLuminanceSource(
-              new Uint8ClampedArray(rawData),
-              img.width,
-              img.height
-            );
+            // Try jsQR for QR codes
+            const qrResult = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'dontInvert',
+            });
 
-            // Try BOTH binarizers - GlobalHistogram is often better for 1D barcodes
-            const binarizers = [
-              { name: 'GlobalHistogram', create: () => new GlobalHistogramBinarizer(luminanceSource) },
-              { name: 'Hybrid', create: () => new HybridBinarizer(luminanceSource) },
-            ];
-
-            for (const binarizer of binarizers) {
-              try {
-                const binaryBitmap = new BinaryBitmap(binarizer.create());
-
-                logger.debug('About to decode with ZXing', {
-                  fileName,
-                  strategy: strategy.name,
-                  rotation,
-                  binarizer: binarizer.name,
-                  imageWidth: img.width,
-                  imageHeight: img.height,
-                });
-
-                const result = this.zxingReader.decode(binaryBitmap);
-
-                logger.debug('ZXing decode succeeded', {
-                  fileName,
-                  strategy: strategy.name,
-                  rotation,
-                  binarizer: binarizer.name,
-                  resultText: result?.getText(),
-                });
-
-                if (result && result.getText()) {
-                  const barcodeValue = result.getText().trim();
-                  logger.info('Barcode detected via ZXing', {
-                    fileName,
-                    assetGroupId,
-                    barcodeValue,
-                    format: BarcodeFormat[result.getBarcodeFormat()],
-                    strategy: strategy.name,
-                    rotation,
-                    binarizer: binarizer.name,
-                  });
-
-                  return {
-                    fileName,
-                    assetGroupId,
-                    barcodeValue,
-                  };
-                }
-              } catch (binarizerError) {
-                if (!(binarizerError instanceof NotFoundException)) {
-                  logger.warn(`ZXing detection error with ${binarizer.name}`, {
-                    fileName,
-                    strategy: strategy.name,
-                    rotation,
-                    binarizer: binarizer.name,
-                    error: binarizerError instanceof Error ? binarizerError.message : String(binarizerError),
-                  });
-                }
-              }
-            }
-          } catch (zxingError) {
-            if (!(zxingError instanceof NotFoundException)) {
-              logger.warn(`ZXing detection error with strategy ${strategy.name}, rotation ${rotation}°`, {
+            if (qrResult) {
+              logger.info('QR code detected via jsQR', {
                 fileName,
+                assetGroupId,
+                barcodeValue: qrResult.data,
                 strategy: strategy.name,
                 rotation,
-                error: zxingError instanceof Error ? zxingError.message : String(zxingError),
-                stack: zxingError instanceof Error ? zxingError.stack : undefined,
               });
+
+              return {
+                fileName,
+                assetGroupId,
+                barcodeValue: qrResult.data.trim(),
+              };
             }
+
+            // Try Quagga2 for 1D barcodes (CODE_128, CODE_39, etc.)
+            try {
+              const result = await new Promise<any>((resolve, reject) => {
+                Quagga.decodeSingle(
+                  {
+                    src: canvas.toDataURL(),
+                    numOfWorkers: 0,
+                    locate: true,
+                    decoder: {
+                      readers: [
+                        'code_128_reader',
+                        'code_39_reader',
+                        'code_93_reader',
+                        'ean_reader',
+                        'upc_reader',
+                        'codabar_reader',
+                        'i2of5_reader',
+                      ] as any,
+                    },
+                  },
+                  (res: any) => {
+                    if (res && res.codeResult) {
+                      resolve(res);
+                    } else {
+                      reject(new Error('No barcode found'));
+                    }
+                  }
+                );
+              });
+
+              if (result && result.codeResult && result.codeResult.code) {
+                const barcodeValue = result.codeResult.code.trim();
+                logger.info('Barcode detected via Quagga2', {
+                  fileName,
+                  assetGroupId,
+                  barcodeValue,
+                  format: result.codeResult.format,
+                  strategy: strategy.name,
+                  rotation,
+                });
+
+                return {
+                  fileName,
+                  assetGroupId,
+                  barcodeValue,
+                };
+              }
+            } catch (quaggaError) {
+              // Continue to next strategy/rotation
+            }
+          } catch (detectionError) {
+            logger.warn(`Detection error with strategy ${strategy.name}, rotation ${rotation}°`, {
+              fileName,
+              strategy: strategy.name,
+              rotation,
+              error: detectionError instanceof Error ? detectionError.message : String(detectionError),
+            });
           }
         }
       }
