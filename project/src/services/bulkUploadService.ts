@@ -279,11 +279,34 @@ export const bulkUploadService = {
         // Update auction_files to link to this item
         const assetGroupIds = group.files.map(f => f.assetGroupId);
 
-        logger.info('[BULK] Linking files to item', {
+        console.log('[BULK] Attempting to link files to item', {
           inv_number: group.inv_number,
           item_id: newItem.id,
           assetGroupIds,
+          fileCount: group.files.length,
         });
+
+        // First check if files exist in auction_files
+        const { data: existingFiles, error: checkError } = await supabase
+          .from('auction_files')
+          .select('id, asset_group_id, item_id, variant')
+          .in('asset_group_id', assetGroupIds);
+
+        console.log('[BULK] Existing files check:', {
+          inv_number: group.inv_number,
+          existingCount: existingFiles?.length || 0,
+          existing: existingFiles,
+          checkError,
+        });
+
+        if (!existingFiles || existingFiles.length === 0) {
+          console.error('[BULK] No files found in database for asset groups');
+          errors.push({
+            inv_number: group.inv_number,
+            error: `Item created but no files found in database. Expected ${assetGroupIds.length} asset groups.`,
+          });
+          continue;
+        }
 
         const { data: linkedFiles, error: linkError } = await supabase
           .from('auction_files')
@@ -303,6 +326,7 @@ export const bulkUploadService = {
         console.log('[BULK] Files linked successfully:', {
           inv_number: group.inv_number,
           linked_count: linkedFiles?.length || 0,
+          expected_count: assetGroupIds.length,
         });
 
         createdItems.push(newItem.id);

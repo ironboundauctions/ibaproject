@@ -209,10 +209,24 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       );
       setUploadedFiles(uploaded);
 
+      // Map uploaded files by fileName to get real asset group IDs
+      const fileNameToAssetGroupId = new Map(
+        uploaded.map(f => [f.fileName, f.assetGroupId])
+      );
+
+      // Update groups to use real asset group IDs (not temp IDs)
+      const groupsWithRealIds = groups.map(group => ({
+        ...group,
+        files: group.files.map(file => ({
+          ...file,
+          assetGroupId: fileNameToAssetGroupId.get(file.fileName) || file.assetGroupId,
+        })),
+      }));
+
       setStage('processing');
 
       // STEP 4: Confirm batch and create inventory items
-      const result = await bulkUploadService.confirmBatch(jobId, uploaded, groups);
+      const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds);
 
       if (result.errors.length > 0) {
         console.warn('Some items failed to create:', result.errors);
