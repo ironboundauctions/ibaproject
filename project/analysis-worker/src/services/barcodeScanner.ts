@@ -31,8 +31,9 @@ export class BarcodeScanner {
         size: buffer.length,
       });
 
+      // OPTIMIZED: Use only the best-performing strategy
+      // Based on logs, mega-upscale-sharp works immediately
       const strategies = [
-        // Start with very aggressive preprocessing for printed barcodes
         { name: 'mega-upscale-sharp', process: (buf: Buffer) =>
           sharp(buf)
             .resize({ width: 3000, fit: 'inside' })
@@ -42,53 +43,11 @@ export class BarcodeScanner {
             .linear(2.0, -128)
             .toBuffer()
         },
-        { name: 'extreme-contrast', process: (buf: Buffer) =>
-          sharp(buf)
-            .grayscale()
-            .normalise()
-            .linear(3.0, -255)
-            .sharpen({ sigma: 2 })
-            .toBuffer()
-        },
-        { name: 'binary-adaptive', process: (buf: Buffer) =>
-          sharp(buf)
-            .resize({ width: 2000, fit: 'inside' })
-            .grayscale()
-            .normalise()
-            .threshold(140)
-            .toBuffer()
-        },
-        { name: 'inverted-high-contrast', process: (buf: Buffer) =>
-          sharp(buf)
-            .grayscale()
-            .normalise()
-            .negate()
-            .linear(2.0, -100)
-            .toBuffer()
-        },
-        // Bottom crop - where barcodes usually are on labels
-        { name: 'bottom-crop-mega', process: async (buf: Buffer) => {
-          const metadata = await sharp(buf).metadata();
-          const height = metadata.height || 1200;
-          const width = metadata.width || 1600;
-          return sharp(buf)
-            .extract({ left: 0, top: Math.floor(height * 0.5), width, height: Math.floor(height * 0.5) })
-            .resize({ width: 3000, fit: 'inside' })
-            .grayscale()
-            .normalise()
-            .sharpen({ sigma: 3 })
-            .linear(2.5, -150)
-            .toBuffer();
-        }},
-        // Original simple strategies
-        { name: 'original', process: (buf: Buffer) => sharp(buf).toBuffer() },
-        { name: 'grayscale-normalized', process: (buf: Buffer) => sharp(buf).grayscale().normalise().toBuffer() },
-        { name: 'upscaled', process: (buf: Buffer) => sharp(buf).resize({ width: 2400, fit: 'inside' }).grayscale().normalise().sharpen({ sigma: 2 }).toBuffer() },
       ];
 
       for (const strategy of strategies) {
-        // Try each strategy with 0, 90, 180, 270 degree rotations
-        const rotations = [0, 90, 180, 270];
+        // Only try 0° rotation (most common)
+        const rotations = [0];
 
         for (const rotation of rotations) {
           try {
