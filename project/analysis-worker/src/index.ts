@@ -78,25 +78,41 @@ async function main() {
         const scanResults = await Promise.all(scanPromises);
 
         // Group results by barcode value
+        // Images are grouped sequentially: barcode image + all following images until next barcode
         const grouped: Map<string, AnalysisFile[]> = new Map();
         const ungrouped: AnalysisFile[] = [];
         const errors: { fileName: string; error: string }[] = [];
+        let currentBarcodeValue: string | null = null;
 
         for (const result of scanResults) {
           if (result.error) {
             errors.push({ fileName: result.fileName, error: result.error });
           } else if (result.barcodeValue) {
-            const existing = grouped.get(result.barcodeValue) || [];
+            // New barcode detected - start new group
+            currentBarcodeValue = result.barcodeValue;
+            const existing = grouped.get(currentBarcodeValue) || [];
             existing.push({
               fileName: result.fileName,
               assetGroupId: result.assetGroupId,
             });
-            grouped.set(result.barcodeValue, existing);
+            grouped.set(currentBarcodeValue, existing);
           } else {
-            ungrouped.push({
-              fileName: result.fileName,
-              assetGroupId: result.assetGroupId,
-            });
+            // No barcode in this image
+            if (currentBarcodeValue) {
+              // Assign to current group (images following a barcode)
+              const existing = grouped.get(currentBarcodeValue) || [];
+              existing.push({
+                fileName: result.fileName,
+                assetGroupId: result.assetGroupId,
+              });
+              grouped.set(currentBarcodeValue, existing);
+            } else {
+              // No barcode seen yet - add to ungrouped
+              ungrouped.push({
+                fileName: result.fileName,
+                assetGroupId: result.assetGroupId,
+              });
+            }
           }
         }
 
