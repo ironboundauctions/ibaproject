@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode } from 'lucide-react';
+import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode, Search } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -24,6 +24,7 @@ import { IronDriveService } from '../services/ironDriveService';
 import { supabase } from '../lib/supabase';
 import { EQUIPMENT_CATEGORIES } from '../utils/formatters';
 import ImageGalleryModal from './ImageGalleryModal';
+import { BarcodeScanner } from '../utils/barcodeScanner';
 
 interface Props {
   item?: InventoryItem | null;
@@ -232,6 +233,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     assetGroupId?: string;
     uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
   } | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
     if (item) {
@@ -276,7 +278,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     try {
       const { data: itemData, error } = await supabase
         .from('inventory_items')
-        .select('barcode_image_url')
+        .select('barcode_image_url, barcode_asset_group_id')
         .eq('id', item.id)
         .single();
 
@@ -285,6 +287,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       if (itemData?.barcode_image_url) {
         setBarcodeImage({
           url: itemData.barcode_image_url,
+          assetGroupId: itemData.barcode_asset_group_id || undefined,
           uploadStatus: 'published'
         });
       }
@@ -510,11 +513,58 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     e.target.value = '';
   };
 
-  const removeBarcodeImage = () => {
-    if (barcodeImage?.url && barcodeImage.file) {
+  const removeBarcodeImage = async () => {
+    if (!barcodeImage) return;
+
+    // If already uploaded to B2, delete it
+    if (barcodeImage.assetGroupId && item?.id) {
+      try {
+        await IronDriveService.deleteFile(barcodeImage.assetGroupId, item.id);
+        console.log('[BARCODE] Deleted from B2:', barcodeImage.assetGroupId);
+      } catch (err) {
+        console.error('[BARCODE] Error deleting from B2:', err);
+      }
+    }
+
+    // Clean up local object URL if exists
+    if (barcodeImage.url && barcodeImage.file) {
       URL.revokeObjectURL(barcodeImage.url);
     }
+
     setBarcodeImage(null);
+  };
+
+  const handleScanBarcode = async () => {
+    if (!barcodeImage?.file && !barcodeImage?.url) {
+      setError('Please upload a barcode image first');
+      return;
+    }
+
+    setIsScanning(true);
+    setError('');
+
+    try {
+      let barcodeText: string | null = null;
+
+      if (barcodeImage.file) {
+        barcodeText = await BarcodeScanner.scanFile(barcodeImage.file);
+      } else if (barcodeImage.url) {
+        barcodeText = await BarcodeScanner.scanUrl(barcodeImage.url);
+      }
+
+      if (barcodeText) {
+        setFormData(prev => ({ ...prev, inventory_number: barcodeText }));
+        console.log('[BARCODE] Scanned and filled:', barcodeText);
+        setError(''); // Clear any previous errors
+      } else {
+        setError('No barcode detected. Try: 1) Better lighting, 2) Closer/clearer photo, 3) Different angle, or 4) Enter manually.');
+      }
+    } catch (err) {
+      console.error('[BARCODE] Scan error:', err);
+      setError('Failed to scan barcode. Please try again or enter manually.');
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   const removeFile = async (id: string) => {
@@ -626,22 +676,39 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       const consigner = consigners.find(c => c.customer_number === formData.consigner_customer_number);
 
       let barcodeImageUrl = '';
+      let barcodeAssetGroupId = barcodeImage?.assetGroupId;
 
-      // Upload barcode image if there's a new one
+      // Upload barcode image to B2 via worker if there's a new one
       if (barcodeImage?.file && barcodeImage.uploadStatus === 'pending') {
         setSubmitProgress('Uploading barcode image...');
         setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'uploading' } : null);
 
         try {
-          const { StorageService } = await import('../services/storageService');
-          const uploadedFile = await StorageService.uploadFile(barcodeImage.file, itemId);
+          // Upload to B2 with 'barcode' variant for dedicated storage
+          const uploadResult = await IronDriveService.uploadFile(
+            barcodeImage.file,
+            itemId,
+            'barcode', // Special variant for barcode images
+            1 // Display order 1 (only one barcode per item)
+          );
 
-          barcodeImageUrl = uploadedFile.cdnUrl;
+          if (!uploadResult.success || !uploadResult.assetGroupId) {
+            throw new Error('Failed to upload barcode image');
+          }
+
+          barcodeAssetGroupId = uploadResult.assetGroupId;
+
+          // Set CDN URL - worker will process and create thumb variant
+          barcodeImageUrl = uploadResult.cdnUrl || '';
+
           setBarcodeImage(prev => prev ? {
             ...prev,
             uploadStatus: 'published',
-            url: barcodeImageUrl
+            url: barcodeImageUrl,
+            assetGroupId: barcodeAssetGroupId
           } : null);
+
+          console.log('[BARCODE] Uploaded to B2:', { assetGroupId: barcodeAssetGroupId, url: barcodeImageUrl });
         } catch (err) {
           console.error('[BARCODE-UPLOAD] Error:', err);
           setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'error' } : null);
@@ -665,7 +732,8 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         consigner_id: consigner?.id,
         condition: formData.condition,
         notes: formData.additional_description,
-        barcode_image_url: barcodeImageUrl || undefined
+        barcode_image_url: barcodeImageUrl || undefined,
+        barcode_asset_group_id: barcodeAssetGroupId || undefined
       };
 
       const result = await onSubmit(submitData);
@@ -818,7 +886,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           />
         </div>
 
-        <div>
+        <div className="col-span-2">
           <label className="block text-sm font-medium text-white mb-1">
             Barcode/Inventory Sticker
           </label>
@@ -837,34 +905,54 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                   className="flex-1 cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-400 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-800"
                 >
                   <ScanBarcode className="w-4 h-4 text-gray-400" />
-                  <span className="text-sm text-gray-300">Upload Barcode</span>
+                  <span className="text-sm text-gray-300">Upload Barcode Image</span>
                 </label>
               </>
             ) : (
-              <div className="flex-1 relative group">
-                <img
-                  src={barcodeImage.url}
-                  alt="Barcode"
-                  className="w-full h-[42px] object-contain rounded-lg bg-white"
-                />
-                {barcodeImage.uploadStatus === 'uploading' && (
-                  <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
-                    <Loader className="w-4 h-4 text-white animate-spin" />
-                  </div>
-                )}
-                {barcodeImage.uploadStatus === 'published' && (
-                  <div className="absolute top-0.5 right-0.5 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded">
-                    ✓
-                  </div>
-                )}
+              <>
+                <div className="flex-1 relative group">
+                  <img
+                    src={barcodeImage.url}
+                    alt="Barcode"
+                    className="w-full h-[42px] object-contain rounded-lg bg-white"
+                  />
+                  {barcodeImage.uploadStatus === 'uploading' && (
+                    <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
+                      <Loader className="w-4 h-4 text-white animate-spin" />
+                    </div>
+                  )}
+                  {barcodeImage.uploadStatus === 'published' && (
+                    <div className="absolute top-0.5 right-0.5 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded">
+                      ✓
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={removeBarcodeImage}
+                    className="absolute top-0.5 left-0.5 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
                 <button
                   type="button"
-                  onClick={removeBarcodeImage}
-                  className="absolute top-0.5 left-0.5 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={handleScanBarcode}
+                  disabled={isScanning}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 whitespace-nowrap"
                 >
-                  <X className="w-3 h-3" />
+                  {isScanning ? (
+                    <>
+                      <Loader className="w-4 h-4 animate-spin" />
+                      <span>Scanning...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-4 h-4" />
+                      <span>Scan</span>
+                    </>
+                  )}
                 </button>
-              </div>
+              </>
             )}
           </div>
         </div>

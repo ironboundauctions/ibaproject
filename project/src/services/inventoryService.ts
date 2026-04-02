@@ -45,6 +45,7 @@ export interface CreateInventoryItemData {
   year_made?: string;
   notes?: string;
   barcode_image_url?: string;
+  barcode_asset_group_id?: string;
 }
 
 export class InventoryService {
