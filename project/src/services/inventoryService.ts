@@ -19,6 +19,7 @@ export interface InventoryItem {
   manufacturer?: string;
   year_made?: string;
   notes?: string;
+  barcode_image_url?: string;
   status: 'cataloged' | 'assigned_to_auction' | 'live' | 'sold' | 'paid' | 'picked_up' | 'returned';
   created_at: string;
   updated_at: string;
@@ -43,6 +44,7 @@ export interface CreateInventoryItemData {
   manufacturer?: string;
   year_made?: string;
   notes?: string;
+  barcode_image_url?: string;
 }
 
 export class InventoryService {

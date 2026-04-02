@@ -256,6 +256,11 @@ export const bulkUploadService = {
           continue;
         }
 
+        // Get the barcode image (first file in group) CDN URL
+        const barcodeFile = group.files[0];
+        const uploadedBarcodeFile = fileMap.get(barcodeFile?.fileName);
+        const barcodeImageUrl = uploadedBarcodeFile?.cdnUrls?.display || uploadedBarcodeFile?.cdnUrls?.thumb;
+
         // Create new inventory item
         const { data: newItem, error: createError } = await supabase
           .from('inventory_items')
@@ -264,6 +269,7 @@ export const bulkUploadService = {
             title: '',
             category: 'Uncategorized',
             status: 'cataloged',
+            barcode_image_url: barcodeImageUrl,
           })
           .select('id')
           .single();

@@ -54,49 +54,34 @@ export default function GlobalInventoryManagement() {
       setItems(itemsData);
       setConsigners(consignersData);
 
-      // Fetch file counts for all items (only count SOURCE files to avoid triple-counting)
+      // Fetch file counts and thumbnails in a single query
       if (itemsData.length > 0) {
         const itemIds = itemsData.map(item => item.id);
 
-        const { data: sourceFiles, error: filesError } = await supabase
+        const { data: allFiles, error: filesError } = await supabase
           .from('auction_files')
-          .select('item_id, cdn_url, mime_type, variant')
+          .select('item_id, cdn_url, variant, display_order')
           .in('item_id', itemIds)
-          .eq('variant', 'source')
-          .eq('published_status', 'published')
-          .is('detached_at', null);
-
-        if (!filesError && sourceFiles) {
-          const fileCounts: Record<string, number> = {};
-
-          sourceFiles.forEach(file => {
-            fileCounts[file.item_id] = (fileCounts[file.item_id] || 0) + 1;
-          });
-
-          console.log('[INVENTORY] File counts loaded:', fileCounts);
-          setFileCountsByItemId(fileCounts);
-        }
-
-        // Fetch thumbnails separately (thumb variant for display)
-        const { data: thumbFiles, error: thumbError } = await supabase
-          .from('auction_files')
-          .select('item_id, cdn_url')
-          .in('item_id', itemIds)
-          .eq('variant', 'thumb')
+          .in('variant', ['source', 'thumb'])
           .eq('published_status', 'published')
           .is('detached_at', null)
           .order('display_order', { ascending: true });
 
-        if (!thumbError && thumbFiles) {
+        if (!filesError && allFiles) {
+          const fileCounts: Record<string, number> = {};
           const thumbnails: Record<string, string> = {};
 
-          thumbFiles.forEach(file => {
-            if (!thumbnails[file.item_id]) {
+          allFiles.forEach(file => {
+            if (file.variant === 'source') {
+              fileCounts[file.item_id] = (fileCounts[file.item_id] || 0) + 1;
+            } else if (file.variant === 'thumb' && !thumbnails[file.item_id]) {
               thumbnails[file.item_id] = file.cdn_url;
             }
           });
 
+          console.log('[INVENTORY] File counts loaded:', fileCounts);
           console.log('[INVENTORY] Thumbnails loaded:', thumbnails);
+          setFileCountsByItemId(fileCounts);
           setCdnThumbnailsByItemId(thumbnails);
         }
       }

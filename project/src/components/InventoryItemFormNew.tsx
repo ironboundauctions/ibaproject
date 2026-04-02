@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Upload, Loader, ExternalLink, Play, GripVertical } from 'lucide-react';
+import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -226,10 +226,17 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
   const [showGallery, setShowGallery] = useState(false);
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; isVideo: boolean }>>([]);
   const [galleryInitialIndex, setGalleryInitialIndex] = useState(0);
+  const [barcodeImage, setBarcodeImage] = useState<{
+    file?: File;
+    url?: string;
+    assetGroupId?: string;
+    uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
+  } | null>(null);
 
   useEffect(() => {
     if (item) {
       loadExistingFiles();
+      loadBarcodeImage();
     }
 
     const handleMessage = async (event: MessageEvent) => {
@@ -261,6 +268,29 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       'irondrivePicker',
       'width=1200,height=800'
     );
+  };
+
+  const loadBarcodeImage = async () => {
+    if (!item?.id) return;
+
+    try {
+      const { data: itemData, error } = await supabase
+        .from('inventory_items')
+        .select('barcode_image_url')
+        .eq('id', item.id)
+        .single();
+
+      if (error) throw error;
+
+      if (itemData?.barcode_image_url) {
+        setBarcodeImage({
+          url: itemData.barcode_image_url,
+          uploadStatus: 'published'
+        });
+      }
+    } catch (error) {
+      console.error('[FORM] Error loading barcode image:', error);
+    }
   };
 
   const loadExistingFiles = async () => {
@@ -462,6 +492,31 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     e.target.value = '';
   };
 
+  const handleBarcodeImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const file = e.target.files[0];
+    if (!file.type.startsWith('image/')) {
+      setError('Barcode must be an image file');
+      return;
+    }
+
+    setBarcodeImage({
+      file,
+      url: URL.createObjectURL(file),
+      uploadStatus: 'pending'
+    });
+
+    e.target.value = '';
+  };
+
+  const removeBarcodeImage = () => {
+    if (barcodeImage?.url && barcodeImage.file) {
+      URL.revokeObjectURL(barcodeImage.url);
+    }
+    setBarcodeImage(null);
+  };
+
   const removeFile = async (id: string) => {
     const fileToRemove = selectedFiles.find(f => f.id === id);
 
@@ -570,6 +625,32 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     try {
       const consigner = consigners.find(c => c.customer_number === formData.consigner_customer_number);
 
+      let barcodeImageUrl = '';
+
+      // Upload barcode image if there's a new one
+      if (barcodeImage?.file && barcodeImage.uploadStatus === 'pending') {
+        setSubmitProgress('Uploading barcode image...');
+        setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'uploading' } : null);
+
+        try {
+          const { StorageService } = await import('../services/storageService');
+          const uploadedFile = await StorageService.uploadFile(barcodeImage.file, itemId);
+
+          barcodeImageUrl = uploadedFile.cdnUrl;
+          setBarcodeImage(prev => prev ? {
+            ...prev,
+            uploadStatus: 'published',
+            url: barcodeImageUrl
+          } : null);
+        } catch (err) {
+          console.error('[BARCODE-UPLOAD] Error:', err);
+          setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'error' } : null);
+          throw new Error('Failed to upload barcode image');
+        }
+      } else if (barcodeImage?.url) {
+        barcodeImageUrl = barcodeImage.url;
+      }
+
       const submitData: CreateInventoryItemData = {
         id: itemId,
         inventory_number: formData.inventory_number,
@@ -583,7 +664,8 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         image_url: '',
         consigner_id: consigner?.id,
         condition: formData.condition,
-        notes: formData.additional_description
+        notes: formData.additional_description,
+        barcode_image_url: barcodeImageUrl || undefined
       };
 
       const result = await onSubmit(submitData);
@@ -734,6 +816,57 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             onChange={(e) => setFormData(prev => ({ ...prev, inventory_number: e.target.value }))}
             className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
           />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-white mb-1">
+            Barcode/Inventory Sticker
+          </label>
+          <div className="flex gap-2">
+            {!barcodeImage ? (
+              <>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleBarcodeImageSelect}
+                  className="hidden"
+                  id="barcode-upload"
+                />
+                <label
+                  htmlFor="barcode-upload"
+                  className="flex-1 cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-400 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-800"
+                >
+                  <ScanBarcode className="w-4 h-4 text-gray-400" />
+                  <span className="text-sm text-gray-300">Upload Barcode</span>
+                </label>
+              </>
+            ) : (
+              <div className="flex-1 relative group">
+                <img
+                  src={barcodeImage.url}
+                  alt="Barcode"
+                  className="w-full h-[42px] object-contain rounded-lg bg-white"
+                />
+                {barcodeImage.uploadStatus === 'uploading' && (
+                  <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
+                    <Loader className="w-4 h-4 text-white animate-spin" />
+                  </div>
+                )}
+                {barcodeImage.uploadStatus === 'published' && (
+                  <div className="absolute top-0.5 right-0.5 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded">
+                    ✓
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={removeBarcodeImage}
+                  className="absolute top-0.5 left-0.5 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         <div>
