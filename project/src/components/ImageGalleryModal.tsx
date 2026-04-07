@@ -27,6 +27,14 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const thumbnailRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // Prevent body scroll when modal is open
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -81,14 +89,16 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (zoomLevel > 1) {
+    if (zoomLevel > 1 && !isVideo) {
+      e.preventDefault();
       setIsDragging(true);
       setDragStart({ x: e.clientX - panPosition.x, y: e.clientY - panPosition.y });
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (isDragging) {
+    if (isDragging && zoomLevel > 1) {
+      e.preventDefault();
       setPanPosition({
         x: e.clientX - dragStart.x,
         y: e.clientY - dragStart.y
@@ -96,13 +106,43 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e?: React.MouseEvent) => {
+    if (e) e.preventDefault();
     setIsDragging(false);
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    if (isFullscreen) {
+  // Add global mouse event listeners for smoother dragging
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (isDragging && zoomLevel > 1) {
+        e.preventDefault();
+        setPanPosition({
+          x: e.clientX - dragStart.x,
+          y: e.clientY - dragStart.y
+        });
+      }
+    };
+
+    const handleGlobalMouseUp = (e: MouseEvent) => {
       e.preventDefault();
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [isDragging, dragStart, zoomLevel]);
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isFullscreen && !isVideo) {
       if (e.deltaY < 0) {
         handleZoomIn();
       } else {
@@ -160,10 +200,6 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
           {/* Media Display */}
           <div
             className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full h-[60vh]'} flex items-center justify-center`}
-            onMouseDown={!isVideo ? handleMouseDown : undefined}
-            onMouseMove={!isVideo ? handleMouseMove : undefined}
-            onMouseUp={!isVideo ? handleMouseUp : undefined}
-            onMouseLeave={!isVideo ? handleMouseUp : undefined}
           >
             {isVideo ? (
               <video
@@ -184,11 +220,14 @@ export default function ImageGalleryModal({ images, initialIndex = 0, onClose }:
               <img
                 src={currentItem.url}
                 alt={`Image ${currentIndex + 1}`}
-                className={`max-w-full max-h-full object-contain transition-transform ${isDragging ? 'cursor-grabbing' : zoomLevel > 1 ? 'cursor-grab' : 'cursor-zoom-in'}`}
+                draggable={false}
+                className={`max-w-full max-h-full object-contain select-none ${isDragging ? 'cursor-grabbing' : zoomLevel > 1 ? 'cursor-grab' : 'cursor-zoom-in'}`}
                 style={{
-                  transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`
+                  transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
+                  transition: isDragging ? 'none' : 'transform 0.1s ease-out'
                 }}
-                onClick={() => !isFullscreen && handleImageClick()}
+                onClick={() => !isFullscreen && !isDragging && handleImageClick()}
+                onMouseDown={handleMouseDown}
                 onError={(e) => {
                   console.error('Image failed to load:', currentItem.url);
                 }}

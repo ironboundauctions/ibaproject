@@ -1,45 +1,54 @@
-import {
-  BrowserMultiFormatReader,
-  DecodeHintType,
-  BarcodeFormat,
-  Result
-} from '@zxing/library';
+import Quagga from '@ericblade/quagga2';
 
 export class BarcodeScanner {
-  private static reader: BrowserMultiFormatReader;
+  /**
+   * Scans multiple files sequentially using Quagga2 on the main thread
+   * Note: Quagga2 doesn't work in Web Workers, so we process sequentially
+   * @param files Array of image files to scan
+   * @param onProgress Progress callback (current, total)
+   * @returns Array of results with fileName and barcode
+   */
+  static async scanBatch(
+    files: File[],
+    onProgress?: (current: number, total: number) => void
+  ): Promise<Array<{ fileName: string; barcode: string | null }>> {
+    console.log(`[BARCODE-BATCH] Starting sequential scan for ${files.length} files`);
 
-  private static getReader(): BrowserMultiFormatReader {
-    if (!this.reader) {
-      const hints = new Map();
+    const results: Array<{ fileName: string; barcode: string | null }> = [];
 
-      // Enable all common barcode formats
-      const formats = [
-        BarcodeFormat.QR_CODE,
-        BarcodeFormat.CODE_128,
-        BarcodeFormat.CODE_39,
-        BarcodeFormat.CODE_93,
-        BarcodeFormat.EAN_13,
-        BarcodeFormat.EAN_8,
-        BarcodeFormat.UPC_A,
-        BarcodeFormat.UPC_E,
-        BarcodeFormat.ITF,
-        BarcodeFormat.CODABAR,
-        BarcodeFormat.DATA_MATRIX,
-        BarcodeFormat.PDF_417,
-        BarcodeFormat.AZTEC
-      ];
+    // Process files sequentially to avoid overwhelming the browser
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const barcode = await this.scanFile(file);
+        results.push({ fileName: file.name, barcode });
 
-      hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
-      hints.set(DecodeHintType.TRY_HARDER, true);
+        if (onProgress) {
+          onProgress(i + 1, files.length);
+        }
 
-      this.reader = new BrowserMultiFormatReader(hints);
-      console.log('[BARCODE] Reader initialized with formats:', formats.map(f => BarcodeFormat[f]));
+        console.log(`[BARCODE-BATCH] File #${i + 1}/${files.length}: ${file.name} → ${barcode ? `"${barcode}"` : 'NO BARCODE'}`);
+      } catch (error) {
+        console.error(`[BARCODE-BATCH] Failed to scan ${file.name}:`, error);
+        results.push({ fileName: file.name, barcode: null });
+
+        if (onProgress) {
+          onProgress(i + 1, files.length);
+        }
+      }
     }
-    return this.reader;
+
+    console.log(`[BARCODE-BATCH] Scan complete:`, {
+      total: files.length,
+      withBarcode: results.filter(r => r.barcode).length,
+      withoutBarcode: results.filter(r => !r.barcode).length,
+    });
+
+    return results;
   }
 
   /**
-   * Scans a barcode from an image file
+   * Scans a barcode from an image file using Quagga2
    * @param file Image file containing the barcode
    * @returns Decoded barcode text or null if no barcode found
    */
@@ -50,10 +59,11 @@ export class BarcodeScanner {
       const imageUrl = URL.createObjectURL(file);
 
       try {
-        const reader = this.getReader();
-        const result: Result = await reader.decodeFromImageUrl(imageUrl);
-        console.log('[BARCODE] Scan successful! Format:', BarcodeFormat[result.getBarcodeFormat()], 'Text:', result.getText());
-        return result.getText();
+        const result = await this.scanImageUrl(imageUrl);
+        if (result) {
+          console.log('[BARCODE] Scan successful! Text:', result);
+        }
+        return result;
       } finally {
         URL.revokeObjectURL(imageUrl);
       }
@@ -65,21 +75,59 @@ export class BarcodeScanner {
   }
 
   /**
-   * Scans a barcode from an image URL
+   * Scans a barcode from an image URL using Quagga2
    * @param url Image URL containing the barcode
    * @returns Decoded barcode text or null if no barcode found
    */
   static async scanUrl(url: string): Promise<string | null> {
     try {
       console.log('[BARCODE] Scanning URL:', url);
-      const reader = this.getReader();
-      const result: Result = await reader.decodeFromImageUrl(url);
-      console.log('[BARCODE] Scan successful! Format:', BarcodeFormat[result.getBarcodeFormat()], 'Text:', result.getText());
-      return result.getText();
+      const result = await this.scanImageUrl(url);
+      if (result) {
+        console.log('[BARCODE] Scan successful! Text:', result);
+      }
+      return result;
     } catch (error) {
       console.error('[BARCODE] Scan failed:', error);
       console.log('[BARCODE] Tip: Ensure the barcode is clear, well-lit, and takes up a significant portion of the image');
       return null;
     }
+  }
+
+  /**
+   * Internal method to scan using Quagga2
+   */
+  private static scanImageUrl(imageUrl: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      Quagga.decodeSingle(
+        {
+          src: imageUrl,
+          numOfWorkers: 0,
+          locate: true,
+          decoder: {
+            readers: [
+              'code_128_reader',
+              'code_39_reader',
+              'code_93_reader',
+              'ean_reader',
+              'ean_8_reader',
+              'upc_reader',
+              'upc_e_reader',
+              'codabar_reader',
+              'i2of5_reader',
+            ],
+          },
+        },
+        (result) => {
+          if (result && result.codeResult && result.codeResult.code) {
+            console.log('[BARCODE] Quagga2 detected:', result.codeResult.code, 'Format:', result.codeResult.format);
+            resolve(result.codeResult.code.trim());
+          } else {
+            console.log('[BARCODE] No barcode detected by Quagga2');
+            resolve(null);
+          }
+        }
+      );
+    });
   }
 }

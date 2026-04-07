@@ -1,7 +1,8 @@
 import { supabase } from '../lib/supabase';
+import { BarcodeScanner } from '../utils/barcodeScanner';
 
 const WORKER_URL = import.meta.env.VITE_WORKER_URL || 'http://localhost:3000';
-const ANALYSIS_WORKER_URL = import.meta.env.VITE_ANALYSIS_WORKER_URL || 'http://localhost:3001';
+const ANALYSIS_WORKER_URL = import.meta.env.VITE_ANALYSIS_WORKER_URL || 'http://localhost:3001'; // Kept for potential revert
 
 export interface UploadedFileInfo {
   fileName: string;
@@ -52,42 +53,158 @@ export interface BatchAnalysisJob {
 
 export const bulkUploadService = {
   /**
-   * STEP 1: Analyze file buffers for barcodes BEFORE uploading
-   * Sends actual file buffers to analysis worker for barcode scanning
+   * STEP 1: Analyze files for barcodes in the browser using Web Workers
+   * BROWSER-SIDE SCANNING - No network calls, much faster!
    */
-  async analyzeBatch(files: File[], onProgress?: (current: number, total: number) => void): Promise<AnalysisResults & { fileMap: Map<string, File> }> {
-    const formData = new FormData();
+  async analyzeBatch(files: File[], onProgress?: (current: number, total: number) => void): Promise<AnalysisResults> {
+    console.log('[BULK-UPLOAD] Starting browser-side barcode analysis for', files.length, 'files');
 
-    // Send actual file buffers for barcode scanning
-    files.forEach(file => {
-      formData.append('files', file);
+    // Scan all files in parallel using Web Workers
+    const scanResults = await BarcodeScanner.scanBatch(files, onProgress);
+
+    console.log('[BULK-UPLOAD] Scan results:', {
+      total: scanResults.length,
+      withBarcode: scanResults.filter(r => r.barcode).length,
+      withoutBarcode: scanResults.filter(r => !r.barcode).length,
     });
 
-    const response = await fetch(`${ANALYSIS_WORKER_URL}/api/analyze-batch`, {
-      method: 'POST',
-      body: formData,
-    });
+    // Group files by barcode (sequential grouping logic)
+    const grouped: GroupedItem[] = [];
+    const ungrouped: GroupedFile[] = [];
+    const errors: { fileName: string; error: string }[] = [];
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Barcode analysis failed');
+    let currentGroup: GroupedItem | null = null;
+
+    console.log('[BULK-UPLOAD] 📦 Starting grouping logic...');
+
+    for (let i = 0; i < scanResults.length; i++) {
+      const result = scanResults[i];
+      const file = files[i];
+
+      // Generate a temporary asset group ID for this file
+      const tempAssetGroupId = `temp-${Date.now()}-${i}`;
+
+      if (result.barcode) {
+        // Start a new group
+        if (currentGroup) {
+          console.log(`[BULK-UPLOAD] 🔒 Closing group "${currentGroup.inv_number}" with ${currentGroup.files.length} files`);
+          grouped.push(currentGroup);
+        }
+        console.log(`[BULK-UPLOAD] 🆕 Starting NEW group with barcode "${result.barcode}" (file: ${result.fileName})`);
+        currentGroup = {
+          inv_number: result.barcode,
+          files: [{
+            fileName: result.fileName,
+            assetGroupId: tempAssetGroupId,
+          }],
+        };
+      } else {
+        // Add to current group or ungrouped
+        if (currentGroup) {
+          console.log(`[BULK-UPLOAD] ➕ Adding ${result.fileName} to current group "${currentGroup.inv_number}" (now ${currentGroup.files.length + 1} files)`);
+          currentGroup.files.push({
+            fileName: result.fileName,
+            assetGroupId: tempAssetGroupId,
+          });
+        } else {
+          console.log(`[BULK-UPLOAD] ⚠️ UNGROUPED: ${result.fileName} (no current group)`);
+          ungrouped.push({
+            fileName: result.fileName,
+            assetGroupId: tempAssetGroupId,
+          });
+        }
+      }
     }
 
-    const data = await response.json();
+    // Don't forget the last group
+    if (currentGroup) {
+      console.log(`[BULK-UPLOAD] 🔒 Closing FINAL group "${currentGroup.inv_number}" with ${currentGroup.files.length} files`);
+      grouped.push(currentGroup);
+    }
 
-    // Create a map of fileName to File object for later upload
-    const fileMap = new Map<string, File>();
-    files.forEach(file => {
-      fileMap.set(file.name, file);
+    console.log('[BULK-UPLOAD] 📊 Grouping complete:', {
+      grouped: grouped.length,
+      ungrouped: ungrouped.length,
+      errors: errors.length,
     });
 
     return {
-      grouped: data.grouped || [],
-      ungrouped: data.ungrouped || [],
-      errors: data.errors || [],
+      grouped,
+      ungrouped,
+      errors,
+    };
+  },
+
+  /* REVERT POINT 1: WORKER-BASED ANALYSIS (COMMENTED OUT FOR TESTING)
+   *
+   * If browser-side scanning doesn't work well, uncomment this method
+   * and remove the analyzeBatch method above.
+   *
+   * Original worker-based implementation:
+   *
+  async analyzeBatchViaWorker(files: File[], onProgress?: (current: number, total: number) => void): Promise<AnalysisResults & { fileMap: Map<string, File> }> {
+    console.log('[BULK-UPLOAD-WORKER] Starting barcode analysis for', files.length, 'files');
+    console.log('[BULK-UPLOAD-WORKER] Analysis worker URL:', ANALYSIS_WORKER_URL);
+
+    const CHUNK_SIZE = 40;
+    const chunks: File[][] = [];
+
+    for (let i = 0; i < files.length; i += CHUNK_SIZE) {
+      chunks.push(files.slice(i, i + CHUNK_SIZE));
+    }
+
+    console.log(`[BULK-UPLOAD-WORKER] Processing ${files.length} files in ${chunks.length} chunks`);
+
+    const allGrouped: GroupedItem[] = [];
+    const allUngrouped: GroupedFile[] = [];
+    const allErrors: { fileName: string; error: string }[] = [];
+
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunk = chunks[chunkIndex];
+      const chunkStart = chunkIndex * CHUNK_SIZE;
+
+      const formData = new FormData();
+      chunk.forEach(file => formData.append('files', file));
+
+      const response = await fetch(`${ANALYSIS_WORKER_URL}/api/analyze-batch`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        let errorMessage = `Chunk ${chunkIndex + 1} failed`;
+        try {
+          const error = await response.json();
+          errorMessage = error.message || errorMessage;
+        } catch {
+          const errorText = await response.text();
+          errorMessage = errorText || `Analysis failed with status ${response.status}`;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+
+      if (data.grouped) allGrouped.push(...data.grouped);
+      if (data.ungrouped) allUngrouped.push(...data.ungrouped);
+      if (data.errors) allErrors.push(...data.errors);
+
+      if (onProgress) {
+        onProgress(Math.min(chunkStart + chunk.length, files.length), files.length);
+      }
+    }
+
+    const fileMap = new Map<string, File>();
+    files.forEach(file => fileMap.set(file.name, file));
+
+    return {
+      grouped: allGrouped,
+      ungrouped: allUngrouped,
+      errors: allErrors,
       fileMap,
     };
   },
+  * END OF REVERT POINT 1 */
 
   /**
    * STEP 2: Create batch job in database with analysis results (no uploads yet)
@@ -149,8 +266,15 @@ export const bulkUploadService = {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Bulk upload failed');
+        let errorMessage = 'Bulk upload failed';
+        try {
+          const error = await response.json();
+          errorMessage = error.message || errorMessage;
+        } catch {
+          const errorText = await response.text();
+          errorMessage = errorText || `Upload failed with status ${response.status}`;
+        }
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -194,14 +318,23 @@ export const bulkUploadService = {
       }>;
     }>
   ): Promise<{ created: string[]; errors: any[] }> {
+    console.log('[BULK-UPLOAD] Starting confirmBatch:', {
+      jobId,
+      uploadedFilesCount: uploadedFiles.length,
+      groupsCount: groups.length
+    });
+
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       throw new Error('User not authenticated');
     }
 
+    console.log('[BULK-UPLOAD] User authenticated:', user.id);
+
     // Map uploaded files to groups
     const fileMap = new Map(uploadedFiles.map(f => [f.fileName, f]));
+    console.log('[BULK-UPLOAD] Created file map with', fileMap.size, 'files');
 
     const groupsWithMetadata = groups.map(group => ({
       ...group,
@@ -219,7 +352,14 @@ export const bulkUploadService = {
       }),
     }));
 
+    console.log('[BULK-UPLOAD] Groups with metadata:', groupsWithMetadata.map(g => ({
+      inv_number: g.inv_number,
+      fileCount: g.files.length,
+      assetGroupIds: g.files.map(f => f.assetGroupId)
+    })));
+
     // Link files to database via processing worker
+    console.log('[BULK-UPLOAD] Calling bulk-process endpoint...');
     const response = await fetch(`${WORKER_URL}/api/bulk-process`, {
       method: 'POST',
       headers: {
@@ -229,37 +369,69 @@ export const bulkUploadService = {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Bulk process failed');
+      let errorMessage = 'Bulk process failed';
+      try {
+        const error = await response.json();
+        errorMessage = error.message || errorMessage;
+      } catch {
+        const errorText = await response.text();
+        errorMessage = errorText || `Process failed with status ${response.status}`;
+      }
+      throw new Error(errorMessage);
     }
 
     const processData = await response.json();
+    console.log('[BULK-UPLOAD] Bulk-process response:', processData);
 
     // Now create inventory items for each group
     const createdItems: string[] = [];
     const errors: any[] = [];
 
+    console.log('[BULK-UPLOAD] Creating inventory items for', groups.length, 'groups');
+
     for (const group of groups) {
+      console.log('[BULK-UPLOAD] Processing group:', group.inv_number, 'with', group.files.length, 'files');
       try {
-        // Check if inventory number already exists
+        // Check if inventory number already exists (including soft-deleted items)
+        console.log('[BULK-UPLOAD] Checking if inventory number exists:', group.inv_number);
         const { data: existing } = await supabase
           .from('inventory_items')
-          .select('id')
+          .select('id, deleted_at')
           .eq('inventory_number', group.inv_number)
           .maybeSingle();
 
         if (existing) {
-          errors.push({
-            inv_number: group.inv_number,
-            error: 'Inventory number already exists',
-          });
+          if (existing.deleted_at) {
+            console.error('[BULK-UPLOAD] Inventory number exists in Recently Removed:', group.inv_number);
+            errors.push({
+              inv_number: group.inv_number,
+              error: 'Item exists in Recently Removed - restore or permanently delete it first',
+              isInRecentlyRemoved: true,
+            });
+          } else {
+            console.error('[BULK-UPLOAD] Inventory number already exists:', group.inv_number);
+            errors.push({
+              inv_number: group.inv_number,
+              error: 'Inventory number already exists',
+              isInRecentlyRemoved: false,
+            });
+          }
           continue;
         }
+
+        console.log('[BULK-UPLOAD] Inventory number is unique, creating item...');
 
         // Get the barcode image (first file in group) CDN URL
         const barcodeFile = group.files[0];
         const uploadedBarcodeFile = fileMap.get(barcodeFile?.fileName);
         const barcodeImageUrl = uploadedBarcodeFile?.cdnUrls?.display || uploadedBarcodeFile?.cdnUrls?.thumb;
+        const barcodeAssetGroupId = barcodeFile?.assetGroupId;
+
+        console.log('[BULK-UPLOAD] Barcode info:', {
+          fileName: barcodeFile?.fileName,
+          assetGroupId: barcodeAssetGroupId,
+          imageUrl: barcodeImageUrl
+        });
 
         // Create new inventory item
         const { data: newItem, error: createError } = await supabase
@@ -270,17 +442,21 @@ export const bulkUploadService = {
             category: 'Uncategorized',
             status: 'cataloged',
             barcode_image_url: barcodeImageUrl,
+            barcode_asset_group_id: barcodeAssetGroupId,
           })
           .select('id')
           .single();
 
         if (createError) {
+          console.error('[BULK-UPLOAD] Failed to create item:', createError);
           errors.push({
             inv_number: group.inv_number,
             error: createError.message,
           });
           continue;
         }
+
+        console.log('[BULK-UPLOAD] Created inventory item:', newItem.id);
 
         // Update auction_files to link to this item
         const assetGroupIds = group.files.map(f => f.assetGroupId);
@@ -335,14 +511,21 @@ export const bulkUploadService = {
           expected_count: assetGroupIds.length,
         });
 
+        console.log('[BULK-UPLOAD] Successfully created and linked item:', group.inv_number);
         createdItems.push(newItem.id);
       } catch (error) {
+        console.error('[BULK-UPLOAD] Exception creating item:', error);
         errors.push({
           inv_number: group.inv_number,
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
     }
+
+    console.log('[BULK-UPLOAD] Batch processing complete:', {
+      created: createdItems.length,
+      errors: errors.length
+    });
 
     // Update batch job with uploaded files and confirm status
     const { error: updateError } = await supabase

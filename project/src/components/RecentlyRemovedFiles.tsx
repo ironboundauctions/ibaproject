@@ -21,6 +21,7 @@ export function RecentlyRemovedFiles() {
   const [files, setFiles] = useState<RemovedFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchRemovedFiles();
@@ -124,51 +125,82 @@ export function RecentlyRemovedFiles() {
     }
   };
 
-  const handlePermanentDelete = async (file: RemovedFile) => {
-    const confirmMessage = `PERMANENT DELETION WARNING
+  const handlePermanentDelete = async (assetGroupIds: string[]) => {
+    const fileCount = assetGroupIds.length;
 
-This will permanently delete:
-• ${file.original_name}
-• All variants (thumb, display, source, video)
-• From database and B2 storage
-
-This action CANNOT be undone.
-
-Type "DELETE" to confirm:`;
-
-    const userInput = prompt(confirmMessage);
-
-    if (userInput !== 'DELETE') {
+    if (!confirm(`Are you sure you want to permanently delete ${fileCount} file${fileCount > 1 ? 's' : ''}?\n\nThis will delete all variants (thumb, display, source, video) from database and B2 storage.\n\nThis action CANNOT be undone.`)) {
       return;
     }
 
     try {
-      // Call worker endpoint to delete from B2 and database
       const workerUrl = import.meta.env.VITE_WORKER_URL;
       if (!workerUrl) {
         throw new Error('Worker URL not configured');
       }
 
-      const response = await fetch(`${workerUrl}/api/delete-asset-group`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ assetGroupId: file.asset_group_id }),
-      });
+      let totalDeleted = 0;
+      const errors: string[] = [];
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Delete request failed');
+      for (const assetGroupId of assetGroupIds) {
+        try {
+          const response = await fetch(`${workerUrl}/api/delete-asset-group`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ assetGroupId }),
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Delete request failed');
+          }
+
+          const result = await response.json();
+          totalDeleted += result.deletedCount || 0;
+        } catch (err) {
+          errors.push(`Failed to delete ${assetGroupId}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
       }
 
-      const result = await response.json();
-      alert(`Successfully deleted ${result.deletedCount} file(s) from B2 and database.`);
+      if (errors.length > 0) {
+        alert(`Deleted ${totalDeleted} file(s) with ${errors.length} error(s):\n\n${errors.join('\n')}`);
+      } else {
+        alert(`Successfully deleted ${totalDeleted} file(s) from B2 and database.`);
+      }
+
+      setSelectedFiles(new Set());
       await fetchRemovedFiles();
     } catch (err) {
       console.error('[RecentlyRemovedFiles] Delete error:', err);
-      alert(err instanceof Error ? err.message : 'Failed to delete file');
+      alert(err instanceof Error ? err.message : 'Failed to delete files');
     }
+  };
+
+  const toggleFileSelection = (assetGroupId: string) => {
+    const newSelection = new Set(selectedFiles);
+    if (newSelection.has(assetGroupId)) {
+      newSelection.delete(assetGroupId);
+    } else {
+      newSelection.add(assetGroupId);
+    }
+    setSelectedFiles(newSelection);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedFiles.size === files.length) {
+      setSelectedFiles(new Set());
+    } else {
+      setSelectedFiles(new Set(files.map(f => f.asset_group_id)));
+    }
+  };
+
+  const handleDeleteSelected = () => {
+    if (selectedFiles.size === 0) {
+      alert('Please select at least one file to delete');
+      return;
+    }
+    handlePermanentDelete(Array.from(selectedFiles));
   };
 
   if (loading) {
@@ -208,84 +240,110 @@ Type "DELETE" to confirm:`;
         <div className="space-y-4">
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
             <p className="text-sm text-blue-800">
-              <strong>Info:</strong> Files remain here until you permanently delete them. Click "Delete Now" to remove from database and B2 storage.
+              <strong>Info:</strong> Files remain here until you permanently delete them. Select files and click "Delete Selected" to remove from database and B2 storage.
             </p>
+          </div>
+
+          <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg p-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selectedFiles.size === files.length && files.length > 0}
+                onChange={toggleSelectAll}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium text-gray-700">
+                {selectedFiles.size === files.length && files.length > 0 ? 'Deselect All' : 'Select All'}
+                {selectedFiles.size > 0 && ` (${selectedFiles.size} selected)`}
+              </span>
+            </label>
+
+            {selectedFiles.size > 0 && (
+              <button
+                onClick={handleDeleteSelected}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors font-medium"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete Selected ({selectedFiles.size})
+              </button>
+            )}
           </div>
 
           <div className="space-y-2">
             {files.map((file) => {
               const canRestore = !file.item_deleted;
+              const isSelected = selectedFiles.has(file.asset_group_id);
 
               return (
                 <div
                   key={file.id}
-                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                  className={`border rounded-lg p-4 transition-colors ${
+                    isSelected
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 hover:bg-gray-50'
+                  }`}
                 >
                   <div className="flex items-start gap-4">
-                    <div className="flex-shrink-0">
-                      {file.cdn_url && file.published_status === 'published' ? (
-                        <img
-                          src={file.cdn_url}
-                          alt={file.original_name}
-                          className="w-16 h-16 object-cover rounded border border-gray-200"
-                        />
-                      ) : (
-                        <div className="w-16 h-16 bg-gray-100 rounded border border-gray-200 flex items-center justify-center">
-                          <FileImage className="w-6 h-6 text-gray-400" />
-                        </div>
-                      )}
-                    </div>
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleFileSelection(file.asset_group_id)}
+                        className="mt-1 w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-medium text-gray-900 truncate">
-                            {file.original_name}
-                          </h3>
-
-                          <div className="mt-1 space-y-1">
-                            <p className="text-sm text-gray-600">
-                              From: {file.item_title ? (
-                                <span className={file.item_deleted ? 'text-red-600 line-through' : ''}>
-                                  {file.item_title}
-                                  {file.item_deleted && ' (item removed)'}
-                                </span>
-                              ) : (
-                                <span className="italic text-gray-400">Unknown item</span>
-                              )}
-                            </p>
-
-                            <p className="text-sm text-gray-500">
-                              Removed: {formatDate(file.detached_at)} • {formatFileSize(file.bytes)}
-                            </p>
+                      <div className="flex-shrink-0">
+                        {file.cdn_url && file.published_status === 'published' ? (
+                          <img
+                            src={file.cdn_url}
+                            alt={file.original_name}
+                            className="w-16 h-16 object-cover rounded border border-gray-200"
+                          />
+                        ) : (
+                          <div className="w-16 h-16 bg-gray-100 rounded border border-gray-200 flex items-center justify-center">
+                            <FileImage className="w-6 h-6 text-gray-400" />
                           </div>
-                        </div>
+                        )}
+                      </div>
 
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleRestore(file)}
-                            disabled={!canRestore}
-                            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md transition-colors ${
-                              canRestore
-                                ? 'bg-blue-600 text-white hover:bg-blue-700'
-                                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                            }`}
-                            title={canRestore ? 'Restore file to item' : 'Cannot restore - item was removed'}
-                          >
-                            <RotateCcw className="w-4 h-4" />
-                            Restore
-                          </button>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-medium text-gray-900 truncate">
+                          {file.original_name}
+                        </h3>
 
-                          <button
-                            onClick={() => handlePermanentDelete(file)}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-                            title="Permanently delete from database and B2"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                            Delete Now
-                          </button>
+                        <div className="mt-1 space-y-1">
+                          <p className="text-sm text-gray-600">
+                            From: {file.item_title ? (
+                              <span className={file.item_deleted ? 'text-red-600 line-through' : ''}>
+                                {file.item_title}
+                                {file.item_deleted && ' (item removed)'}
+                              </span>
+                            ) : (
+                              <span className="italic text-gray-400">Unknown item</span>
+                            )}
+                          </p>
+
+                          <p className="text-sm text-gray-500">
+                            Removed: {formatDate(file.detached_at)} • {formatFileSize(file.bytes)}
+                          </p>
                         </div>
                       </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleRestore(file)}
+                        disabled={!canRestore}
+                        className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-md transition-colors ${
+                          canRestore
+                            ? 'bg-blue-600 text-white hover:bg-blue-700'
+                            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        }`}
+                        title={canRestore ? 'Restore file to item' : 'Cannot restore - item was removed'}
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        Restore
+                      </button>
                     </div>
                   </div>
                 </div>

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical, Zap } from 'lucide-react';
+import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical } from 'lucide-react';
 import {
   bulkUploadService,
   type UploadedFileInfo,
@@ -7,7 +7,12 @@ import {
   type GroupedFile,
   type AnalysisResults,
 } from '../services/bulkUploadService';
-import { ImageReducer, type ReducedImage } from '../utils/imageReduction';
+import { supabase } from '../lib/supabase';
+
+/* REVERT POINT 2: If reverting to worker-based scanning, restore these imports:
+ * import { ImageReducer, type ReducedImage } from '../utils/imageReduction';
+ * import { Zap } from 'lucide-react'; // Add Zap back to icon imports above
+ */
 
 interface BulkUploadModalProps {
   isOpen: boolean;
@@ -15,12 +20,15 @@ interface BulkUploadModalProps {
   onSuccess: () => void;
 }
 
-type UploadStage = 'select' | 'reducing' | 'uploading' | 'analyzing' | 'confirm' | 'processing' | 'complete';
+type UploadStage = 'select' | 'analyzing' | 'uploading' | 'confirm' | 'processing' | 'complete';
+
+/* REVERT POINT 2: If reverting to worker-based scanning, restore 'reducing' stage:
+ * type UploadStage = 'select' | 'reducing' | 'uploading' | 'analyzing' | 'confirm' | 'processing' | 'complete';
+ */
 
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
   const [stage, setStage] = useState<UploadStage>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileInfo[]>([]);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResults>({
     grouped: [],
@@ -30,39 +38,50 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const [groups, setGroups] = useState<GroupedItem[]>([]);
   const [ungrouped, setUngrouped] = useState<GroupedFile[]>([]);
   const [error, setError] = useState<string>('');
+  const [validationErrors, setValidationErrors] = useState<Array<{ inv_number: string; error: string; isInRecentlyRemoved?: boolean }>>([]);
   const [jobId, setJobId] = useState<string>('');
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
-  const [reductionProgress, setReductionProgress] = useState<{ current: number; total: number; currentFile: string }>({
-    current: 0,
-    total: 0,
-    currentFile: ''
-  });
-  const [reductionStats, setReductionStats] = useState<{ originalTotal: number; reducedTotal: number; savingsPercent: number } | null>(null);
+  const [analysisProgress, setAnalysisProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [newGroupNumber, setNewGroupNumber] = useState<string>('');
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
   const [selectedUngrouped, setSelectedUngrouped] = useState<Set<string>>(new Set());
+
+  /* REVERT POINT 2: If reverting to worker-based scanning, restore these states:
+   * const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
+   * const [reductionProgress, setReductionProgress] = useState<{ current: number; total: number; currentFile: string }>({
+   *   current: 0,
+   *   total: 0,
+   *   currentFile: ''
+   * });
+   * const [reductionStats, setReductionStats] = useState<{ originalTotal: number; reducedTotal: number; savingsPercent: number } | null>(null);
+   */
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const resetModal = () => {
     setStage('select');
     setSelectedFiles([]);
-    setFileMap(new Map());
     setUploadedFiles([]);
     setAnalysisResults({ grouped: [], ungrouped: [], errors: [] });
     setGroups([]);
     setUngrouped([]);
     setError('');
+    setValidationErrors([]);
     setJobId('');
     setUploadProgress({ current: 0, total: 0 });
-    setReductionProgress({ current: 0, total: 0, currentFile: '' });
-    setReductionStats(null);
+    setAnalysisProgress({ current: 0, total: 0 });
     setExpandedGroups(new Set());
     setNewGroupNumber('');
     setShowNewGroupInput(false);
     setSelectedUngrouped(new Set());
   };
+
+  /* REVERT POINT 2: If reverting to worker-based scanning, add these back to resetModal:
+   * setFileMap(new Map());
+   * setReductionProgress({ current: 0, total: 0, currentFile: '' });
+   * setReductionStats(null);
+   */
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -83,33 +102,85 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setError('');
 
     try {
-      setStage('reducing');
-
-      const reducedImages = await ImageReducer.reduceImagesForAnalysis(
-        selectedFiles,
-        (progress) => setReductionProgress(progress)
-      );
-
-      const stats = ImageReducer.calculateSavings(reducedImages);
-      setReductionStats(stats);
-
-      const reducedFiles = reducedImages.map(r => r.reducedFile);
-      const originalFileMap = new Map<string, File>();
-      reducedImages.forEach(r => {
-        originalFileMap.set(r.reducedFile.name, r.originalFile);
-      });
-
+      // BROWSER-SIDE SCANNING: Scan barcodes directly in browser
       setStage('analyzing');
 
-      const analysis = await bulkUploadService.analyzeBatch(reducedFiles);
-      setAnalysisResults(analysis);
-      setFileMap(originalFileMap);
+      const analysis = await bulkUploadService.analyzeBatch(selectedFiles, (current, total) => {
+        setAnalysisProgress({ current, total });
+      });
 
+      setAnalysisResults(analysis);
       setGroups(analysis.grouped);
       setUngrouped(analysis.ungrouped);
 
       const batchJobId = await bulkUploadService.createBatchJob(selectedFiles, analysis);
       setJobId(batchJobId);
+
+      /* REVERT POINT 2: If reverting to worker-based scanning, replace the above code with:
+       *
+       * setStage('reducing');
+       *
+       * const reducedImages = await ImageReducer.reduceImagesForAnalysis(
+       *   selectedFiles,
+       *   (progress) => setReductionProgress(progress)
+       * );
+       *
+       * const stats = ImageReducer.calculateSavings(reducedImages);
+       * setReductionStats(stats);
+       *
+       * const reducedFiles = reducedImages.map(r => r.reducedFile);
+       * const originalFileMap = new Map<string, File>();
+       * reducedImages.forEach(r => {
+       *   originalFileMap.set(r.reducedFile.name, r.originalFile);
+       * });
+       *
+       * setStage('analyzing');
+       *
+       * const analysis = await bulkUploadService.analyzeBatch(reducedFiles, (current, total) => {
+       *   setAnalysisProgress({ current, total });
+       * });
+       * setAnalysisResults(analysis);
+       * setFileMap(originalFileMap);
+       *
+       * setGroups(analysis.grouped);
+       * setUngrouped(analysis.ungrouped);
+       *
+       * const batchJobId = await bulkUploadService.createBatchJob(selectedFiles, analysis);
+       * setJobId(batchJobId);
+       */
+
+      // Check for conflicts with existing inventory numbers (including Recently Removed)
+      if (analysis.grouped.length > 0) {
+        const inventoryNumbers = analysis.grouped.map(g => g.inv_number);
+        const { data: existingItems } = await supabase
+          .from('inventory_items')
+          .select('inventory_number, deleted_at')
+          .in('inventory_number', inventoryNumbers);
+
+        if (existingItems && existingItems.length > 0) {
+          const conflicts = existingItems.map(item => ({
+            inv_number: item.inventory_number,
+            error: item.deleted_at
+              ? 'Item exists in Recently Removed - restore or permanently delete it first'
+              : 'Inventory number already exists',
+            isInRecentlyRemoved: !!item.deleted_at,
+          }));
+
+          setValidationErrors(conflicts);
+          const recentlyRemovedCount = conflicts.filter(c => c.isInRecentlyRemoved).length;
+          const activeCount = conflicts.length - recentlyRemovedCount;
+
+          let errorMsg = '';
+          if (recentlyRemovedCount > 0 && activeCount > 0) {
+            errorMsg = `${recentlyRemovedCount} item(s) exist in Recently Removed and ${activeCount} item(s) already exist as active inventory.`;
+          } else if (recentlyRemovedCount > 0) {
+            errorMsg = `${recentlyRemovedCount} item(s) exist in Recently Removed section. Please restore or permanently delete them first.`;
+          } else {
+            errorMsg = `${activeCount} inventory number(s) already exist.`;
+          }
+          setError(errorMsg);
+        }
+      }
 
       setStage('confirm');
     } catch (err) {
@@ -180,6 +251,58 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setUngrouped(prev => prev.filter(f => f.assetGroupId !== assetGroupId));
   };
 
+  const handleRemoveGroupFromBatch = (inv_number: string) => {
+    // Completely remove a group and its files from the batch (no moving to ungrouped)
+    setGroups(prev => prev.filter(g => g.inv_number !== inv_number));
+
+    // Also remove from validation errors
+    setValidationErrors(prev => prev.filter(e => e.inv_number !== inv_number));
+
+    // Clear general error if no more conflicts
+    setValidationErrors(prev => {
+      if (prev.length === 1 && prev[0].inv_number === inv_number) {
+        setError('');
+      }
+      return prev.filter(e => e.inv_number !== inv_number);
+    });
+  };
+
+  const handlePermanentlyDeleteFromDB = async (inv_number: string) => {
+    if (!confirm(`Permanently delete "${inv_number}" from the database? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      // Permanently delete the item from the database
+      const { error } = await supabase
+        .from('inventory_items')
+        .delete()
+        .eq('inventory_number', inv_number)
+        .not('deleted_at', 'is', null); // Only delete soft-deleted items
+
+      if (error) throw error;
+
+      // Remove from validation errors
+      setValidationErrors(prev => prev.filter(e => e.inv_number !== inv_number));
+
+      // Clear general error if no more conflicts
+      if (validationErrors.length === 1) {
+        setError('');
+      }
+
+      // Show success message briefly
+      const originalError = error;
+      setError(`Successfully deleted ${inv_number} from database. You can now proceed.`);
+      setTimeout(() => {
+        if (validationErrors.filter(e => e.inv_number !== inv_number).length === 0) {
+          setError('');
+        }
+      }, 3000);
+    } catch (err) {
+      setError(`Failed to delete ${inv_number}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
   const handleConfirm = async () => {
     if (groups.length === 0) {
       setError('No groups to process. Create at least one group with an inventory number.');
@@ -198,9 +321,17 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         });
       });
 
+      // Map file names to actual File objects from selectedFiles
+      const fileNameToFile = new Map(selectedFiles.map(f => [f.name, f]));
       const filesToUpload = Array.from(confirmedFileNames)
-        .map(name => fileMap.get(name))
+        .map(name => fileNameToFile.get(name))
         .filter((f): f is File => f !== undefined);
+
+      /* REVERT POINT 2: If reverting to worker-based scanning, restore fileMap usage:
+       * const filesToUpload = Array.from(confirmedFileNames)
+       *   .map(name => fileMap.get(name))
+       *   .filter((f): f is File => f !== undefined);
+       */
 
       // STEP 3: Upload confirmed files to B2
       const uploaded = await bulkUploadService.uploadConfirmedFiles(
@@ -229,8 +360,30 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds);
 
       if (result.errors.length > 0) {
-        console.warn('Some items failed to create:', result.errors);
+        console.error('[BULK-UPLOAD] Some items failed to create:', result.errors);
+        result.errors.forEach(err => {
+          console.error('[BULK-UPLOAD] Error for', err.inv_number, ':', err.error);
+        });
+
+        // Store detailed errors for user action
+        setValidationErrors(result.errors);
+
+        // Check if any errors are due to Recently Removed items
+        const recentlyRemovedCount = result.errors.filter(e => e.isInRecentlyRemoved).length;
+        if (recentlyRemovedCount > 0) {
+          setError(`${result.created.length} item(s) created. ${recentlyRemovedCount} item(s) exist in Recently Removed section. Please restore or permanently delete them first.`);
+        } else {
+          const errorSummary = result.errors.map(e => `${e.inv_number}: ${e.error}`).join('\n');
+          setError(`${result.created.length} item(s) created successfully, but ${result.errors.length} failed:\n${errorSummary}`);
+        }
+        setStage('confirm');
+        return;
       }
+
+      console.log('[BULK-UPLOAD] Batch complete:', {
+        created: result.created.length,
+        errors: result.errors.length
+      });
 
       setStage('complete');
       setTimeout(() => {
@@ -291,9 +444,48 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
         <div className="flex-1 overflow-y-auto p-6">
           {error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
-              <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-              <p className="text-red-800">{error}</p>
+            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-red-800 font-medium mb-2">{error}</p>
+
+                  {validationErrors.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {validationErrors.map((err) => (
+                        <div key={err.inv_number} className="bg-white border border-red-200 rounded p-3">
+                          <div className="flex flex-col gap-3">
+                            <div>
+                              <p className="font-semibold text-gray-900">{err.inv_number}</p>
+                              <p className="text-sm text-gray-600">{err.error}</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {err.isInRecentlyRemoved && (
+                                <button
+                                  onClick={() => handlePermanentlyDeleteFromDB(err.inv_number)}
+                                  className="px-3 py-1.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 whitespace-nowrap flex items-center gap-1"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                  Permanently Delete from DB
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleRemoveGroupFromBatch(err.inv_number)}
+                                className="px-3 py-1.5 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 whitespace-nowrap"
+                              >
+                                Remove from This Batch
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <p className="text-sm text-gray-600 mt-2">
+                        You can permanently delete conflicting items from the database, or just remove them from this batch and proceed with the others.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
@@ -352,6 +544,29 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             </div>
           )}
 
+          {stage === 'analyzing' && (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
+              <p className="text-lg font-medium text-gray-900 mb-2">Scanning for barcodes...</p>
+              <p className="text-sm text-gray-500">Using browser-side parallel scanning for fast results</p>
+              {analysisProgress.total > 0 && (
+                <div className="mt-4 w-full max-w-md">
+                  <div className="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Processing files</span>
+                    <span>{analysisProgress.current} / {analysisProgress.total}</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(analysisProgress.current / analysisProgress.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* REVERT POINT 2: If reverting to worker-based scanning, restore reduction stage UI:
           {stage === 'reducing' && (
             <div className="flex flex-col items-center justify-center py-12">
               <Zap className="w-12 h-12 text-yellow-600 mb-4" />
@@ -371,20 +586,8 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             </div>
           )}
 
-          {stage === 'analyzing' && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-              <p className="text-lg font-medium text-gray-900 mb-2">Scanning for barcodes...</p>
-              <p className="text-sm text-gray-500">Analyzing optimized images for inventory numbers</p>
-              {reductionStats && (
-                <div className="mt-4 p-4 bg-green-50 rounded-lg">
-                  <p className="text-sm text-green-800">
-                    Saved {ImageReducer.formatBytes(reductionStats.originalTotal - reductionStats.reducedTotal)} ({Math.round(reductionStats.savingsPercent)}% reduction)
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
+          And change analyzing stage back to show reduction stats
+          */}
 
           {stage === 'uploading' && (
             <div className="flex flex-col items-center justify-center py-12">
@@ -458,7 +661,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                       {expandedGroups.has(group.inv_number) && (
                         <div className="p-4 grid grid-cols-4 gap-4">
                           {group.files.map((file) => {
-                            const originalFile = fileMap.get(file.fileName);
+                            const originalFile = selectedFiles.find(f => f.name === file.fileName);
                             return (
                               <div key={file.assetGroupId} className="relative group">
                                 {originalFile ? (
@@ -537,7 +740,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
                   <div className="grid grid-cols-4 gap-4">
                     {ungrouped.map((file) => {
-                      const originalFile = fileMap.get(file.fileName);
+                      const originalFile = selectedFiles.find(f => f.name === file.fileName);
                       return (
                         <div
                           key={file.assetGroupId}
@@ -598,9 +801,17 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                 </button>
                 <button
                   onClick={handleConfirm}
-                  className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                  disabled={validationErrors.length > 0}
+                  className={`flex-1 py-3 px-6 rounded-lg font-medium transition-colors ${
+                    validationErrors.length > 0
+                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
                 >
-                  Create {groups.length} Inventory Item{groups.length !== 1 ? 's' : ''}
+                  {validationErrors.length > 0
+                    ? 'Fix Conflicts First'
+                    : `Create ${groups.length} Inventory Item${groups.length !== 1 ? 's' : ''}`
+                  }
                 </button>
               </div>
             </div>

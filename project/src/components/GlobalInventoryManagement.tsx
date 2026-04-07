@@ -60,7 +60,7 @@ export default function GlobalInventoryManagement() {
 
         const { data: allFiles, error: filesError } = await supabase
           .from('auction_files')
-          .select('item_id, cdn_url, variant, display_order')
+          .select('item_id, cdn_url, variant, display_order, asset_group_id')
           .in('item_id', itemIds)
           .in('variant', ['source', 'thumb'])
           .eq('published_status', 'published')
@@ -71,16 +71,22 @@ export default function GlobalInventoryManagement() {
           const fileCounts: Record<string, number> = {};
           const thumbnails: Record<string, string> = {};
 
+          // Create a map of item barcode asset group IDs for filtering
+          const barcodeAssetGroupIds = new Map(
+            itemsData.map(item => [item.id, item.barcode_asset_group_id]).filter(([_, id]) => id)
+          );
+
           allFiles.forEach(file => {
-            if (file.variant === 'source') {
+            const barcodeAssetGroupId = barcodeAssetGroupIds.get(file.item_id);
+            const isBarcode = barcodeAssetGroupId && file.asset_group_id === barcodeAssetGroupId;
+
+            if (file.variant === 'source' && !isBarcode) {
               fileCounts[file.item_id] = (fileCounts[file.item_id] || 0) + 1;
-            } else if (file.variant === 'thumb' && !thumbnails[file.item_id]) {
+            } else if (file.variant === 'thumb' && !thumbnails[file.item_id] && !isBarcode) {
               thumbnails[file.item_id] = file.cdn_url;
             }
           });
 
-          console.log('[INVENTORY] File counts loaded:', fileCounts);
-          console.log('[INVENTORY] Thumbnails loaded:', thumbnails);
           setFileCountsByItemId(fileCounts);
           setCdnThumbnailsByItemId(thumbnails);
         }

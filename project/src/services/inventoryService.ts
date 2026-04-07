@@ -1,5 +1,10 @@
 import { supabase } from '../lib/supabase';
 
+export interface DocumentImage {
+  url: string;
+  assetGroupId: string;
+}
+
 export interface InventoryItem {
   id: string;
   inventory_number: string;
@@ -20,6 +25,9 @@ export interface InventoryItem {
   year_made?: string;
   notes?: string;
   barcode_image_url?: string;
+  barcode_asset_group_id?: string;
+  document_urls?: DocumentImage[];
+  has_title?: boolean;
   status: 'cataloged' | 'assigned_to_auction' | 'live' | 'sold' | 'paid' | 'picked_up' | 'returned';
   created_at: string;
   updated_at: string;
@@ -46,6 +54,8 @@ export interface CreateInventoryItemData {
   notes?: string;
   barcode_image_url?: string;
   barcode_asset_group_id?: string;
+  document_urls?: DocumentImage[];
+  has_title?: boolean;
 }
 
 export class InventoryService {

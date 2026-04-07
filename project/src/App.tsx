@@ -39,23 +39,11 @@ function AppContent() {
 
   const isAdmin = isAdminUser(user);
 
-  // Debug logging
-  useEffect(() => {
-    console.log('App: Current state:', {
-      isInitialized,
-      user: user ? `${user.email || 'no-email'} (${user.role || 'no-role'})` : 'no user',
-      userValid: user ? !!(user.email && user.name && user.role) : 'n/a',
-      currentView
-    });
-  }, [isInitialized, user]);
-
   // Handle URL-based routing
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname;
       const hash = window.location.hash;
-
-      console.log('handlePopState - path:', path, 'hash:', hash, 'user:', user?.email || 'none');
 
       if (path === '/reset-password' || hash === '#reset-password') {
         setCurrentView('password-reset');
@@ -121,25 +109,20 @@ function AppContent() {
     window.addEventListener('popstate', handlePopState);
 
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [user, isInitialized]);
+  }, [isInitialized, isAdmin]);
 
 
   useEffect(() => {
     const fetchAuctions = async () => {
       try {
-        console.log('Fetching auctions...');
         // Get both regular auctions and admin events
         const [regularAuctions, adminEvents] = await Promise.all([
           AuctionService.getAuctions(),
           AdminService.getAllAuctions()
         ]);
-        
-        console.log('Regular auctions:', regularAuctions.length);
-        console.log('Admin events:', adminEvents.length);
-        
+
         // Combine both types
         const auctionData = [...adminEvents, ...regularAuctions];
-        console.log('Total combined auctions:', auctionData.length);
         setAuctions(auctionData);
         setFilteredAuctions(auctionData);
       } catch (error) {
@@ -151,13 +134,10 @@ function AppContent() {
 
     if (isInitialized) {
       fetchAuctions();
-      
+
       // Set up periodic refresh
-      const interval = setInterval(() => {
-        console.log('Periodic refresh...');
-        fetchAuctions();
-      }, 30000); // Refresh every 30 seconds
-      
+      const interval = setInterval(fetchAuctions, 30000); // Refresh every 30 seconds
+
       return () => clearInterval(interval);
     }
   }, [isInitialized]);
@@ -198,11 +178,9 @@ function AppContent() {
   const handleViewChange = (view: View) => {
     // Restrict admin view to authorized users only
     if (view === 'admin' && !isAdminUser(user)) {
-      console.warn('Unauthorized access attempt to admin console');
       return;
     }
-    
-    console.log('View change requested:', view, 'Current user:', user ? user.email : 'no user');
+
     setCurrentView(view);
     
     // Update URL without page refresh
@@ -242,12 +220,6 @@ function AppContent() {
       </div>
     );
   }
-
-  // Debug logging
-  console.log('App render state:', {
-    isInitialized,
-    user: user ? 'logged in' : 'not logged in'
-  });
 
   const showHero = currentView === 'home';
 

@@ -214,7 +214,8 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       estimated_value_high: item?.estimated_value_high?.toString() || '',
       consigner_customer_number: consigner?.customer_number || '',
       condition: item?.condition || '',
-      additional_description: item?.notes || ''
+      additional_description: item?.notes || '',
+      has_title: item?.has_title || false
     };
   });
 
@@ -233,12 +234,19 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     assetGroupId?: string;
     uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
   } | null>(null);
+  const [documentImages, setDocumentImages] = useState<Array<{
+    file?: File;
+    url?: string;
+    assetGroupId?: string;
+    uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
+  }>>([]);
   const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
     if (item) {
       loadExistingFiles();
       loadBarcodeImage();
+      loadDocumentImages();
     }
 
     const handleMessage = async (event: MessageEvent) => {
@@ -293,6 +301,31 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       }
     } catch (error) {
       console.error('[FORM] Error loading barcode image:', error);
+    }
+  };
+
+  const loadDocumentImages = async () => {
+    if (!item?.id) return;
+
+    try {
+      const { data: itemData, error } = await supabase
+        .from('inventory_items')
+        .select('document_urls')
+        .eq('id', item.id)
+        .single();
+
+      if (error) throw error;
+
+      if (itemData?.document_urls && Array.isArray(itemData.document_urls)) {
+        const documents = itemData.document_urls.map((doc: any) => ({
+          url: doc.url,
+          assetGroupId: doc.assetGroupId,
+          uploadStatus: 'published' as const
+        }));
+        setDocumentImages(documents);
+      }
+    } catch (error) {
+      console.error('[FORM] Error loading document images:', error);
     }
   };
 
@@ -360,8 +393,26 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             displayOrder: primaryFile.display_order || 0
           };
         });
+
+        // Filter out barcode image and document images from gallery
+        const barcodeAssetGroupId = item.barcode_asset_group_id;
+        const documentAssetGroupIds = new Set(
+          (item.document_urls as Array<{ assetGroupId: string }> || [])
+            .map(doc => doc.assetGroupId)
+            .filter(Boolean)
+        );
+
+        const galleryFiles = existing.filter(f => {
+          if (f.assetGroupId === barcodeAssetGroupId) return false;
+          if (documentAssetGroupIds.has(f.assetGroupId)) return false;
+          return true;
+        });
+
         console.log('[LOAD] Original asset group IDs:', Array.from(originalAssetGroupIds));
-        setSelectedFiles(existing);
+        console.log('[LOAD] Barcode asset group ID:', barcodeAssetGroupId);
+        console.log('[LOAD] Document asset group IDs:', Array.from(documentAssetGroupIds));
+        console.log('[LOAD] Total files:', existing.length, 'Gallery files:', galleryFiles.length);
+        setSelectedFiles(galleryFiles);
       }
     } catch (error) {
       console.error('[FORM] Error loading files:', error);
@@ -555,7 +606,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       if (barcodeText) {
         setFormData(prev => ({ ...prev, inventory_number: barcodeText }));
         console.log('[BARCODE] Scanned and filled:', barcodeText);
-        setError(''); // Clear any previous errors
+        setError('');
       } else {
         setError('No barcode detected. Try: 1) Better lighting, 2) Closer/clearer photo, 3) Different angle, or 4) Enter manually.');
       }
@@ -565,6 +616,81 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     } finally {
       setIsScanning(false);
     }
+  };
+
+  const handleDocumentImagesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const files = Array.from(e.target.files);
+
+    // Check for duplicates by filename
+    const existingFileNames = new Set(documentImages.map(d => d.file?.name || '').filter(Boolean));
+
+    const newDocuments = files.map(file => {
+      if (!file.type.startsWith('image/')) {
+        setError('All documents must be image files');
+        return null;
+      }
+
+      // Skip if file with same name already exists
+      if (existingFileNames.has(file.name)) {
+        console.log('[DOCUMENT] Skipping duplicate file:', file.name);
+        return null;
+      }
+
+      return {
+        file,
+        url: URL.createObjectURL(file),
+        uploadStatus: 'pending' as const
+      };
+    }).filter(Boolean) as Array<{
+      file: File;
+      url: string;
+      uploadStatus: 'pending';
+    }>;
+
+    if (newDocuments.length > 0) {
+      setDocumentImages(prev => [...prev, ...newDocuments]);
+    }
+
+    e.target.value = '';
+  };
+
+  const removeDocumentImage = async (index: number) => {
+    const document = documentImages[index];
+    if (!document) return;
+
+    // If already uploaded to B2, delete it immediately
+    if (document.assetGroupId && item?.id) {
+      try {
+        console.log('[DOCUMENT] Deleting document from B2:', document.assetGroupId);
+        await IronDriveService.deleteFile(document.assetGroupId, item.id);
+
+        // Also update the item's document_urls in the database
+        const remainingDocs = documentImages
+          .filter((_, i) => i !== index)
+          .filter(d => d.assetGroupId && d.url)
+          .map(d => ({ url: d.url!, assetGroupId: d.assetGroupId! }));
+
+        await supabase
+          .from('inventory_items')
+          .update({ document_urls: remainingDocs.length > 0 ? remainingDocs : null })
+          .eq('id', item.id);
+
+        console.log('[DOCUMENT] Deleted from B2 and updated database');
+      } catch (err) {
+        console.error('[DOCUMENT] Error deleting from B2:', err);
+        setError('Failed to delete document. Please try again.');
+        return;
+      }
+    }
+
+    // Clean up local object URL if exists
+    if (document.url && document.file) {
+      URL.revokeObjectURL(document.url);
+    }
+
+    setDocumentImages(prev => prev.filter((_, i) => i !== index));
   };
 
   const removeFile = async (id: string) => {
@@ -684,22 +810,16 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'uploading' } : null);
 
         try {
-          // Upload to B2 with 'barcode' variant for dedicated storage
-          const uploadResult = await IronDriveService.uploadFile(
-            barcodeImage.file,
-            itemId,
-            'barcode', // Special variant for barcode images
-            1 // Display order 1 (only one barcode per item)
-          );
+          const uploadResult = await FileUploadService.uploadPCFileToWorker(barcodeImage.file, itemId) as any;
 
-          if (!uploadResult.success || !uploadResult.assetGroupId) {
+          if (!uploadResult.success || !uploadResult.asset_group_id) {
             throw new Error('Failed to upload barcode image');
           }
 
-          barcodeAssetGroupId = uploadResult.assetGroupId;
+          const displayFile = uploadResult.files.find((f: any) => f.variant === 'display') || uploadResult.files[0];
 
-          // Set CDN URL - worker will process and create thumb variant
-          barcodeImageUrl = uploadResult.cdnUrl || '';
+          barcodeAssetGroupId = uploadResult.asset_group_id;
+          barcodeImageUrl = displayFile.cdn_url;
 
           setBarcodeImage(prev => prev ? {
             ...prev,
@@ -718,6 +838,63 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         barcodeImageUrl = barcodeImage.url;
       }
 
+      // Upload all pending document images
+      const uploadedDocuments: Array<{ url: string; assetGroupId: string }> = [];
+
+      for (let i = 0; i < documentImages.length; i++) {
+        const doc = documentImages[i];
+
+        if (doc.file && doc.uploadStatus === 'pending') {
+          setSubmitProgress(`Uploading document ${i + 1} of ${documentImages.filter(d => d.uploadStatus === 'pending').length}...`);
+          setDocumentImages(prev => prev.map((d, idx) =>
+            idx === i ? { ...d, uploadStatus: 'uploading' as const } : d
+          ));
+
+          try {
+            // Add small delay between uploads to prevent overwhelming the worker
+            if (i > 0) {
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
+            const uploadResult = await FileUploadService.uploadPCFileToWorker(doc.file, itemId) as any;
+
+            if (!uploadResult.success || !uploadResult.asset_group_id) {
+              throw new Error(`Failed to upload document ${i + 1}`);
+            }
+
+            const displayFile = uploadResult.files.find((f: any) => f.variant === 'display') || uploadResult.files[0];
+
+            uploadedDocuments.push({
+              url: displayFile.cdn_url,
+              assetGroupId: uploadResult.asset_group_id
+            });
+
+            setDocumentImages(prev => prev.map((d, idx) =>
+              idx === i ? {
+                ...d,
+                uploadStatus: 'published' as const,
+                url: displayFile.cdn_url,
+                assetGroupId: uploadResult.asset_group_id
+              } : d
+            ));
+
+            console.log('[DOCUMENT] Uploaded to B2:', { assetGroupId: uploadResult.asset_group_id, url: displayFile.cdn_url });
+          } catch (err) {
+            console.error('[DOCUMENT-UPLOAD] Error:', err);
+            setDocumentImages(prev => prev.map((d, idx) =>
+              idx === i ? { ...d, uploadStatus: 'error' as const } : d
+            ));
+            throw new Error(`Failed to upload document ${i + 1}`);
+          }
+        } else if (doc.url && doc.assetGroupId) {
+          // Already uploaded document
+          uploadedDocuments.push({
+            url: doc.url,
+            assetGroupId: doc.assetGroupId
+          });
+        }
+      }
+
       const submitData: CreateInventoryItemData = {
         id: itemId,
         inventory_number: formData.inventory_number,
@@ -733,7 +910,9 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         condition: formData.condition,
         notes: formData.additional_description,
         barcode_image_url: barcodeImageUrl || undefined,
-        barcode_asset_group_id: barcodeAssetGroupId || undefined
+        barcode_asset_group_id: barcodeAssetGroupId || undefined,
+        document_urls: uploadedDocuments.length > 0 ? uploadedDocuments : undefined,
+        has_title: formData.has_title
       };
 
       const result = await onSubmit(submitData);
@@ -914,7 +1093,13 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                   <img
                     src={barcodeImage.url}
                     alt="Barcode"
-                    className="w-full h-[42px] object-contain rounded-lg bg-white"
+                    className="w-full h-[42px] object-contain rounded-lg bg-white cursor-pointer hover:opacity-80 transition-opacity"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setGalleryImages([{ url: barcodeImage.url!, isVideo: false }]);
+                      setGalleryInitialIndex(0);
+                      setShowGallery(true);
+                    }}
                   />
                   {barcodeImage.uploadStatus === 'uploading' && (
                     <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
@@ -957,6 +1142,69 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           </div>
         </div>
 
+        <div className="col-span-3">
+          <label className="block text-sm font-medium text-white mb-1">
+            Documents
+          </label>
+          <div className="space-y-2">
+            {documentImages.length > 0 && (
+              <div className="grid grid-cols-4 gap-2">
+                {documentImages.map((doc, index) => (
+                  <div key={index} className="relative group">
+                    <img
+                      src={doc.url}
+                      alt={`Document ${index + 1}`}
+                      className="w-full h-24 object-cover rounded-lg bg-white cursor-pointer hover:opacity-80 transition-opacity"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setGalleryImages(documentImages.map(d => ({ url: d.url!, isVideo: false })));
+                        setGalleryInitialIndex(index);
+                        setShowGallery(true);
+                      }}
+                    />
+                    {doc.uploadStatus === 'uploading' && (
+                      <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
+                        <Loader className="w-4 h-4 text-white animate-spin" />
+                      </div>
+                    )}
+                    {doc.uploadStatus === 'published' && (
+                      <div className="absolute top-1 right-1 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded">
+                        ✓
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeDocumentImage(index)}
+                      className="absolute top-1 left-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleDocumentImagesSelect}
+                className="hidden"
+                id="document-upload"
+              />
+              <label
+                htmlFor="document-upload"
+                className="cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-400 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-800"
+              >
+                <Upload className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-300">
+                  {documentImages.length > 0 ? 'Add More Documents' : 'Upload Documents'}
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
         <div>
           <label className="block text-sm font-medium text-white mb-1">
             Consigner
@@ -992,16 +1240,30 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </div>
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-white mb-1">
-          Title
-        </label>
-        <input
-          type="text"
-          value={formData.title}
-          onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
-        />
+      <div className="grid grid-cols-[1fr_auto] gap-4 items-end">
+        <div>
+          <label className="block text-sm font-medium text-white mb-1">
+            Title
+          </label>
+          <input
+            type="text"
+            value={formData.title}
+            onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
+            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+          />
+        </div>
+
+        <div className="pb-0.5">
+          <label className="flex items-center gap-2 cursor-pointer bg-gray-800 px-4 py-2.5 rounded-lg border border-gray-600 hover:bg-gray-700 transition-colors">
+            <input
+              type="checkbox"
+              checked={formData.has_title}
+              onChange={(e) => setFormData(prev => ({ ...prev, has_title: e.target.checked }))}
+              className="w-4 h-4 rounded border-gray-400 text-ironbound-orange-500 focus:ring-ironbound-orange-500 focus:ring-offset-gray-800"
+            />
+            <span className="text-sm font-medium text-white whitespace-nowrap">Has Title/Ownership Docs</span>
+          </label>
+        </div>
       </div>
 
       <div>

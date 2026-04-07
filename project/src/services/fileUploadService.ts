@@ -157,42 +157,57 @@ export class FileUploadService {
     itemId?: string,
     onProgress?: (progress: number) => void
   ): Promise<UploadResponse> {
-    try {
-      const workerUrl = import.meta.env.VITE_WORKER_URL;
+    const maxRetries = 3;
+    let lastError: Error | null = null;
 
-      if (!workerUrl) {
-        throw new Error('Worker URL not configured');
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const workerUrl = import.meta.env.VITE_WORKER_URL;
+
+        if (!workerUrl) {
+          throw new Error('Worker URL not configured');
+        }
+
+        if (!itemId) {
+          throw new Error('itemId is required');
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('item_id', itemId);
+
+        const response = await fetch(`${workerUrl}/api/upload-and-process`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
+          throw new Error(errorData.error || `Upload failed with status ${response.status}`);
+        }
+
+        const result: UploadResponse = await response.json();
+
+        if (onProgress) {
+          onProgress(100);
+        }
+
+        return result;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.error(`Upload attempt ${attempt}/${maxRetries} failed:`, lastError);
+
+        if (attempt < maxRetries) {
+          // Wait before retrying (exponential backoff: 1s, 2s, 4s)
+          const delay = Math.pow(2, attempt - 1) * 1000;
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
-
-      if (!itemId) {
-        throw new Error('itemId is required');
-      }
-
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('item_id', itemId);
-
-      const response = await fetch(`${workerUrl}/api/upload-and-process`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
-        throw new Error(errorData.error || `Upload failed with status ${response.status}`);
-      }
-
-      const result: UploadResponse = await response.json();
-
-      if (onProgress) {
-        onProgress(100);
-      }
-
-      return result;
-    } catch (error) {
-      console.error('Error uploading file to worker:', error);
-      throw error;
     }
+
+    console.error('All upload attempts failed');
+    throw lastError || new Error('Upload failed after multiple attempts');
   }
 
   static async uploadMultiplePCFilesToWorker(

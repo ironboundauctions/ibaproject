@@ -65,7 +65,7 @@ export default function Footer() {
               </div>
               <div className="flex items-center space-x-3">
                 <MapPin className="h-4 w-4 text-ironbound-orange-500" />
-                <span className="text-ironbound-grey-300">(432) 209-5112</span>
+                <span className="text-ironbound-grey-300">Seminole, TX 79360</span>
               </div>
             </div>
           </div>
