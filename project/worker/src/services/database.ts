@@ -418,6 +418,17 @@ export class DatabaseService {
     return result.rows[0];
   }
 
+  async getAllAssetGroups(): Promise<string[]> {
+    const result = await this.pool.query<{ asset_group_id: string }>(
+      `SELECT DISTINCT asset_group_id
+       FROM auction_files
+       WHERE asset_group_id IS NOT NULL
+       ORDER BY asset_group_id`
+    );
+
+    return result.rows.map(row => row.asset_group_id);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

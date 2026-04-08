@@ -1,6 +1,9 @@
 import { supabase } from '../lib/supabase';
 import { UserRole, UserPermissions, UserRoleRecord } from './userRoleService';
 
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
 export interface AdminWithProfile {
   id: string;
   user_id: string;
@@ -17,7 +20,7 @@ export interface AdminWithProfile {
 export interface CreateAdminData {
   email: string;
   name: string;
-  role: 'super_admin' | 'admin';
+  role: 'super_admin' | 'admin' | 'user';
   permissions: UserPermissions;
 }
 
@@ -68,46 +71,91 @@ export class AdminManagementService {
     }
   }
 
-  static async createAdminWithInvitation(adminData: CreateAdminData): Promise<{ success: boolean; token?: string; error?: string }> {
+  static async getAllUsers(): Promise<AdminWithProfile[]> {
     try {
-      const invitationToken = this.generateInvitationToken();
-      const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + 48);
+      const { data, error } = await supabase
+        .from('user_roles')
+        .select(`
+          *,
+          profiles!user_roles_user_id_fkey (
+            email,
+            full_name,
+            avatar_url
+          )
+        `)
+        .order('created_at', { ascending: false });
 
-      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      if (error) {
+        console.error('Error fetching users:', error);
+        return [];
+      }
+
+      return (data || []).map((item: any) => ({
+        id: item.id,
+        user_id: item.user_id,
+        role: item.role,
+        permissions: item.permissions,
+        invitation_status: item.invitation_status,
+        invitation_expires_at: item.invitation_expires_at,
+        created_at: item.created_at,
+        email: item.profiles.email,
+        full_name: item.profiles.full_name,
+        avatar_url: item.profiles.avatar_url
+      }));
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      return [];
+    }
+  }
+
+  static async createAdminWithInvitation(adminData: CreateAdminData): Promise<{ success: boolean; temporaryPassword?: string; email?: string; error?: string }> {
+    try {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+
+      // Get the current user's session token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      const payload = {
         email: adminData.email,
-        email_confirm: false,
-        user_metadata: {
-          name: adminData.name,
-          invitation_pending: true
-        }
+        name: adminData.name,
+        role: adminData.role,
+        permissions: adminData.permissions,
+      };
+
+      console.log('Sending payload to create-user:', payload);
+      console.log('Session token:', session.access_token?.substring(0, 20) + '...');
+      console.log('Anon key:', supabaseAnonKey?.substring(0, 20) + '...');
+
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': supabaseAnonKey,
+      };
+
+      console.log('Request headers:', Object.keys(headers));
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/create-user`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
       });
 
-      if (authError) {
-        return { success: false, error: authError.message };
+      const result = await response.json();
+      console.log('Response from create-user:', { status: response.status, result });
+      console.error('ERROR DETAILS:', result.error);
+
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Failed to create user' };
       }
 
-      if (!authData.user) {
-        return { success: false, error: 'Failed to create user' };
-      }
-
-      const { error: roleError } = await supabase
-        .from('user_roles')
-        .upsert({
-          user_id: authData.user.id,
-          role: adminData.role,
-          permissions: adminData.permissions,
-          invitation_token: invitationToken,
-          invitation_expires_at: expiresAt.toISOString(),
-          invitation_status: 'pending'
-        });
-
-      if (roleError) {
-        console.error('Error creating user role:', roleError);
-        return { success: false, error: roleError.message };
-      }
-
-      return { success: true, token: invitationToken };
+      return {
+        success: true,
+        temporaryPassword: result.temporaryPassword,
+        email: result.email
+      };
     } catch (error: any) {
       console.error('Error creating admin with invitation:', error);
       return { success: false, error: error.message };
@@ -146,16 +194,40 @@ export class AdminManagementService {
 
   static async updateAdminPermissions(userId: string, permissions: UserPermissions): Promise<{ success: boolean; error?: string }> {
     try {
-      const { error } = await supabase
-        .from('user_roles')
-        .update({
-          permissions,
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
 
-      if (error) {
-        return { success: false, error: error.message };
+      // Get current role to preserve it
+      const { data: currentRole } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!currentRole) {
+        return { success: false, error: 'User role not found' };
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/update-user-role`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          userId,
+          role: currentRole.role,
+          permissions
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Failed to update permissions' };
       }
 
       return { success: true };
@@ -167,16 +239,36 @@ export class AdminManagementService {
 
   static async changeAdminRole(userId: string, newRole: 'super_admin' | 'admin'): Promise<{ success: boolean; error?: string }> {
     try {
-      const { error } = await supabase
-        .from('user_roles')
-        .update({
-          role: newRole,
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
 
-      if (error) {
-        return { success: false, error: error.message };
+      // Get current permissions to preserve them
+      const { data: currentRole } = await supabase
+        .from('user_roles')
+        .select('permissions')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/update-user-role`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          userId,
+          role: newRole,
+          permissions: currentRole?.permissions
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Failed to change role' };
       }
 
       return { success: true };
@@ -188,21 +280,33 @@ export class AdminManagementService {
 
   static async demoteAdminToUser(userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const { error } = await supabase
-        .from('user_roles')
-        .update({
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/update-user-role`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          userId,
           role: 'user',
           permissions: {
             can_manage_events: false,
             can_manage_inventory: false,
             can_manage_users: false
-          },
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', userId);
+          }
+        }),
+      });
 
-      if (error) {
-        return { success: false, error: error.message };
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Failed to demote user' };
       }
 
       return { success: true };
@@ -214,15 +318,64 @@ export class AdminManagementService {
 
   static async deleteAdmin(userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const { error } = await supabase.auth.admin.deleteUser(userId);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
 
-      if (error) {
-        return { success: false, error: error.message };
+      const response = await fetch(`${supabaseUrl}/functions/v1/delete-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
+        },
+        body: JSON.stringify({ userId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Failed to delete user' };
       }
 
       return { success: true };
     } catch (error: any) {
       console.error('Error deleting admin:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async resetUserPassword(userId: string, sendEmail: boolean = false): Promise<{ success: boolean; temporaryPassword?: string; email?: string; error?: string }> {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/reset-user-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
+        },
+        body: JSON.stringify({ userId, sendEmail }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Failed to reset password' };
+      }
+
+      return {
+        success: true,
+        temporaryPassword: result.temporaryPassword,
+        email: result.email
+      };
+    } catch (error: any) {
+      console.error('Error resetting password:', error);
       return { success: false, error: error.message };
     }
   }

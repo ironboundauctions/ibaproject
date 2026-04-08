@@ -23,10 +23,11 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
   const [mode, setMode] = useState<CreationMode>('create');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
 
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState<'super_admin' | 'admin'>('admin');
+  const [role, setRole] = useState<'super_admin' | 'admin' | 'user'>('admin');
   const [permissions, setPermissions] = useState<UserPermissions>({
     can_manage_events: true,
     can_manage_inventory: true,
@@ -50,7 +51,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
         .from('user_roles')
         .select(`
           user_id,
-          profiles!inner (
+          profiles!user_roles_user_id_fkey (
             id,
             email,
             full_name,
@@ -108,14 +109,20 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
             can_manage_events: true,
             can_manage_inventory: true,
             can_manage_users: true
+          } : role === 'user' ? {
+            can_manage_events: false,
+            can_manage_inventory: false,
+            can_manage_users: false
           } : permissions
         });
 
-        if (result.success) {
-          onSuccess();
-          onClose();
+        if (result.success && result.temporaryPassword && result.email) {
+          setCreatedCredentials({
+            email: result.email,
+            password: result.temporaryPassword
+          });
         } else {
-          setError(result.error || 'Failed to create admin');
+          setError(result.error || 'Failed to create user');
         }
       } else {
         if (!selectedUserId) {
@@ -126,7 +133,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
 
         const result = await AdminManagementService.promoteUserToAdmin(
           selectedUserId,
-          role,
+          role as 'super_admin' | 'admin',
           role === 'super_admin' ? {
             can_manage_events: true,
             can_manage_inventory: true,
@@ -178,7 +185,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-gray-900">Add New Admin</h2>
+          <h2 className="text-xl font-semibold text-gray-900">Add New User</h2>
           <button
             onClick={onClose}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
@@ -200,7 +207,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
               }`}
             >
               <UserPlus className="w-5 h-5" />
-              <span className="font-medium">Create New Admin</span>
+              <span className="font-medium">Create New</span>
             </button>
             <button
               type="button"
@@ -212,7 +219,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
               }`}
             >
               <ArrowUp className="w-5 h-5" />
-              <span className="font-medium">Promote Existing User</span>
+              <span className="font-medium">Promote User</span>
             </button>
           </div>
 
@@ -253,16 +260,16 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
 
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
                   <p className="text-sm text-blue-800">
-                    An invitation email will be sent to this address with a secure link to set up their password.
+                    User will be created immediately with a temporary password. Make sure to save the credentials and share them securely.
                   </p>
                 </div>
               </div>
             ) : (
               <div className="space-y-4 mb-6">
                 {loadingUsers ? (
-                  <div className="text-center py-8 text-gray-500">Loading users...</div>
+                  <div className="text-center py-8 text-gray-900">Loading users...</div>
                 ) : regularUsers.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500">No regular users found</div>
+                  <div className="text-center py-8 text-gray-900">No regular users found</div>
                 ) : (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -314,7 +321,32 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
 
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-3">Role</label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
+                <label
+                  className={`flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                    role === 'user'
+                      ? 'border-orange-500 bg-orange-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="role"
+                    value="user"
+                    checked={role === 'user'}
+                    onChange={(e) => setRole(e.target.value as 'user')}
+                    className="mt-1 w-4 h-4 text-orange-600"
+                    disabled={loading}
+                  />
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <User className="w-4 h-4 text-gray-600" />
+                      <span className="font-medium text-gray-900">User</span>
+                    </div>
+                    <p className="text-sm text-gray-600">Standard user account</p>
+                  </div>
+                </label>
+
                 <label
                   className={`flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-all ${
                     role === 'admin'
@@ -336,7 +368,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
                       <Shield className="w-4 h-4 text-orange-600" />
                       <span className="font-medium text-gray-900">Admin</span>
                     </div>
-                    <p className="text-sm text-gray-600">Limited access based on assigned permissions</p>
+                    <p className="text-sm text-gray-600">Custom permissions</p>
                   </div>
                 </label>
 
@@ -361,7 +393,7 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
                       <Crown className="w-4 h-4 text-red-600" />
                       <span className="font-medium text-gray-900">Super Admin</span>
                     </div>
-                    <p className="text-sm text-gray-600">Full access to all features</p>
+                    <p className="text-sm text-gray-600">Full access</p>
                   </div>
                 </label>
               </div>
@@ -413,29 +445,86 @@ export const CreateAdminModal: React.FC<CreateAdminModalProps> = ({ onClose, onS
               </div>
             )}
 
+            {createdCredentials && (
+              <div className="mb-4 p-4 bg-green-50 border-2 border-green-500 rounded-lg">
+                <h4 className="font-semibold text-green-900 mb-2">User Created Successfully</h4>
+                <div className="space-y-2 mb-3">
+                  <div>
+                    <label className="text-xs font-medium text-green-800">Email</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={createdCredentials.email}
+                        readOnly
+                        className="flex-1 px-2 py-1 bg-white border border-green-300 rounded text-sm text-gray-900"
+                      />
+                      <button
+                        onClick={() => navigator.clipboard.writeText(createdCredentials.email)}
+                        className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-green-800">Temporary Password</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={createdCredentials.password}
+                        readOnly
+                        className="flex-1 px-2 py-1 bg-white border border-green-300 rounded text-sm font-mono text-gray-900"
+                      />
+                      <button
+                        onClick={() => navigator.clipboard.writeText(createdCredentials.password)}
+                        className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-green-800 mb-3">
+                  Save these credentials now. The user can log in immediately and should change their password after first login.
+                </p>
+                <button
+                  onClick={() => {
+                    setCreatedCredentials(null);
+                    onSuccess();
+                    onClose();
+                  }}
+                  className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  Done
+                </button>
+              </div>
+            )}
+
             {error && (
               <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
                 <p className="text-sm text-red-800">{error}</p>
               </div>
             )}
 
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
-                disabled={loading}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50"
-                disabled={loading || (mode === 'promote' && !selectedUserId)}
-              >
-                {loading ? 'Processing...' : mode === 'create' ? 'Send Invitation' : 'Promote to Admin'}
-              </button>
-            </div>
+            {!createdCredentials && (
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  disabled={loading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors disabled:opacity-50"
+                  disabled={loading || (mode === 'promote' && !selectedUserId)}
+                >
+                  {loading ? 'Processing...' : mode === 'create' ? 'Create User' : 'Update Role'}
+                </button>
+              </div>
+            )}
           </form>
         </div>
       </div>

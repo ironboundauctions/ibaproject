@@ -186,4 +186,72 @@ export class StorageService {
       throw error;
     }
   }
+
+  async listAllAssetGroups(): Promise<{ assetGroupId: string; key: string; size: number; lastModified: string }[]> {
+    logger.info('Listing all asset groups from B2');
+    const assetGroups: { assetGroupId: string; key: string; size: number; lastModified: string }[] = [];
+    const seenAssetGroups = new Set<string>();
+
+    try {
+      let continuationToken: string | undefined;
+
+      do {
+        const result = await this.s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: config.b2.bucket,
+            Prefix: 'assets/',
+            ContinuationToken: continuationToken,
+            MaxKeys: 1000,
+          })
+        );
+
+        if (result.Contents) {
+          for (const obj of result.Contents) {
+            if (!obj.Key) continue;
+
+            // Extract asset group ID from path: assets/{itemId}/{assetGroupId}/file
+            // OR from old format: assets/{assetGroupId}/file
+            const parts = obj.Key.split('/');
+
+            let assetGroupId: string | null = null;
+
+            if (parts.length >= 3) {
+              // Could be new format: assets/{itemId}/{assetGroupId}/file
+              // or old format: assets/{assetGroupId}/file
+              const potentialAssetGroupId = parts[2];
+
+              // Check if it looks like a UUID (basic check)
+              if (potentialAssetGroupId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+                assetGroupId = potentialAssetGroupId;
+              } else {
+                // Might be old format, check if parts[1] is UUID
+                const oldFormatId = parts[1];
+                if (oldFormatId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+                  assetGroupId = oldFormatId;
+                }
+              }
+            }
+
+            if (assetGroupId && !seenAssetGroups.has(assetGroupId)) {
+              seenAssetGroups.add(assetGroupId);
+              assetGroups.push({
+                assetGroupId,
+                key: obj.Key,
+                size: obj.Size || 0,
+                lastModified: obj.LastModified?.toISOString() || new Date().toISOString(),
+              });
+            }
+          }
+        }
+
+        continuationToken = result.NextContinuationToken;
+      } while (continuationToken);
+
+      logger.info('B2 asset groups listed', { count: assetGroups.length });
+      return assetGroups;
+    } catch (error) {
+      logger.error('Failed to list all asset groups', error as Error);
+      throw error;
+    }
+  }
 }

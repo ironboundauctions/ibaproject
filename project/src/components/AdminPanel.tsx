@@ -19,6 +19,7 @@ import { UserPromotionPanel } from './UserPromotionPanel';
 import { RecentlyRemovedFiles } from './RecentlyRemovedFiles';
 import { RecentlyRemovedItems } from './RecentlyRemovedItems';
 import { OrphanedRecordsCleanup } from './OrphanedRecordsCleanup';
+import { B2BucketCleanup } from './B2BucketCleanup';
 
 interface AdminPanelProps {
   onBack: () => void;
@@ -463,6 +464,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
             <RecentlyRemovedFiles />
             <RecentlyRemovedItems />
             <OrphanedRecordsCleanup />
+            <B2BucketCleanup />
           </div>
         )}
 

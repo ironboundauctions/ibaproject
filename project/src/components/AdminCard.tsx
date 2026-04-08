@@ -1,5 +1,5 @@
 import React from 'react';
-import { MoreVertical, Edit, Trash2, ArrowDown, RefreshCw, XCircle } from 'lucide-react';
+import { MoreVertical, CreditCard as Edit, Trash2, ArrowDown, RefreshCw, XCircle, Key } from 'lucide-react';
 import { AdminWithProfile } from '../services/adminManagementService';
 import { RoleBadge } from './RoleBadge';
 import { PermissionBadge } from './PermissionBadge';
@@ -12,6 +12,7 @@ interface AdminCardProps {
   onChangeRole: (admin: AdminWithProfile) => void;
   onDemote: (admin: AdminWithProfile) => void;
   onDelete: (admin: AdminWithProfile) => void;
+  onResetPassword?: (admin: AdminWithProfile) => void;
   onResendInvitation?: (admin: AdminWithProfile) => void;
   onCancelInvitation?: (admin: AdminWithProfile) => void;
 }
@@ -23,6 +24,7 @@ export const AdminCard: React.FC<AdminCardProps> = ({
   onChangeRole,
   onDemote,
   onDelete,
+  onResetPassword,
   onResendInvitation,
   onCancelInvitation
 }) => {
@@ -125,36 +127,52 @@ export const AdminCard: React.FC<AdminCardProps> = ({
                     </>
                   ) : (
                     <>
-                      <button
-                        onClick={() => {
-                          onEditPermissions(admin);
-                          setShowMenu(false);
-                        }}
-                        className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                      >
-                        <Edit className="w-4 h-4" />
-                        Edit Permissions
-                      </button>
-                      <button
-                        onClick={() => {
-                          onChangeRole(admin);
-                          setShowMenu(false);
-                        }}
-                        className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                      >
-                        <Edit className="w-4 h-4" />
-                        Change Role
-                      </button>
-                      <button
-                        onClick={() => {
-                          onDemote(admin);
-                          setShowMenu(false);
-                        }}
-                        className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                      >
-                        <ArrowDown className="w-4 h-4" />
-                        Demote to User
-                      </button>
+                      {admin.role !== 'user' && (
+                        <>
+                          <button
+                            onClick={() => {
+                              onEditPermissions(admin);
+                              setShowMenu(false);
+                            }}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            <Edit className="w-4 h-4" />
+                            Edit Permissions
+                          </button>
+                          <button
+                            onClick={() => {
+                              onChangeRole(admin);
+                              setShowMenu(false);
+                            }}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            <Edit className="w-4 h-4" />
+                            Change Role
+                          </button>
+                          <button
+                            onClick={() => {
+                              onDemote(admin);
+                              setShowMenu(false);
+                            }}
+                            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            <ArrowDown className="w-4 h-4" />
+                            Demote to User
+                          </button>
+                        </>
+                      )}
+                      {onResetPassword && (
+                        <button
+                          onClick={() => {
+                            onResetPassword(admin);
+                            setShowMenu(false);
+                          }}
+                          className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <Key className="w-4 h-4" />
+                          Reset Password
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           onDelete(admin);

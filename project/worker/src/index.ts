@@ -184,6 +184,91 @@ class MediaPublishingWorker {
       }
     });
 
+    app.post('/api/scan-orphaned-b2-files', async (req: Request, res: Response) => {
+      try {
+        logger.info('B2 orphaned files scan requested');
+        const startTime = Date.now();
+
+        // Get all asset groups from B2
+        const b2AssetGroups = await this.storage.listAllAssetGroups();
+        logger.info('B2 asset groups found', { count: b2AssetGroups.length });
+
+        // Get all unique asset groups from database
+        const dbAssetGroups = await this.db.getAllAssetGroups();
+        logger.info('Database asset groups found', { count: dbAssetGroups.length });
+
+        // Create a set of database asset group IDs for fast lookup
+        const dbAssetGroupSet = new Set(dbAssetGroups);
+
+        // Find orphaned files
+        const orphanedFiles = b2AssetGroups.filter(file => !dbAssetGroupSet.has(file.assetGroupId));
+        const estimatedWastedSpace = orphanedFiles.reduce((sum, file) => sum + file.size, 0);
+
+        logger.info('B2 scan complete', {
+          totalB2Files: b2AssetGroups.length,
+          totalDbAssetGroups: dbAssetGroups.length,
+          orphanedCount: orphanedFiles.length,
+          wastedSpace: estimatedWastedSpace
+        });
+
+        res.json({
+          totalB2Files: b2AssetGroups.length,
+          totalDbAssetGroups: dbAssetGroups.length,
+          orphanedFiles: orphanedFiles.map(f => ({
+            key: f.key,
+            size: f.size,
+            lastModified: f.lastModified
+          })),
+          estimatedWastedSpace,
+          scanDuration: Date.now() - startTime
+        });
+      } catch (error) {
+        logger.error('B2 scan failed', error as Error);
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Scan failed'
+        });
+      }
+    });
+
+    app.post('/api/cleanup-orphaned-b2-files', async (req: Request, res: Response) => {
+      try {
+        const { fileKeys } = req.body;
+
+        if (!Array.isArray(fileKeys) || fileKeys.length === 0) {
+          res.status(400).json({ error: 'Missing or invalid fileKeys array' });
+          return;
+        }
+
+        logger.info('B2 orphaned files cleanup requested', { count: fileKeys.length });
+
+        let deleted = 0;
+        let failed = 0;
+
+        for (const key of fileKeys) {
+          try {
+            await this.storage.deleteFile(key);
+            deleted++;
+          } catch (error) {
+            logger.error('Failed to delete B2 file', { key, error });
+            failed++;
+          }
+        }
+
+        logger.info('B2 cleanup complete', { deleted, failed });
+
+        res.json({
+          deleted,
+          failed,
+          total: fileKeys.length
+        });
+      } catch (error) {
+        logger.error('B2 cleanup failed', error as Error);
+        res.status(500).json({
+          error: error instanceof Error ? error.message : 'Cleanup failed'
+        });
+      }
+    });
+
     const port = process.env.PORT || 3000;
     this.httpServer = app.listen(port, () => {
       logger.info(`HTTP server listening on port ${port}`);

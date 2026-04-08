@@ -821,7 +821,19 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
               <p className="text-lg font-medium text-gray-900 mb-2">Creating inventory items...</p>
-              <p className="text-sm text-gray-500">Linking files and creating database records</p>
+              <p className="text-sm text-gray-500 mb-4">Linking files and creating database records</p>
+
+              {/* Progress bar */}
+              <div className="w-full max-w-md">
+                <div className="bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-blue-600 h-full transition-all duration-300 ease-out"
+                    style={{ width: '100%' }}
+                  >
+                    <div className="w-full h-full bg-blue-400 animate-pulse" />
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

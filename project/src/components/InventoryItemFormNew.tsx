@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode, Search } from 'lucide-react';
+import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode, Search, FileText, Download } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -59,9 +59,26 @@ function guessMimeType(filename: string): string {
     mp4: 'video/mp4',
     mov: 'video/quicktime',
     avi: 'video/x-msvideo',
-    webm: 'video/webm'
+    webm: 'video/webm',
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   };
   return mimeTypes[ext] || 'application/octet-stream';
+}
+
+function isImageMimeType(mimeType?: string): boolean {
+  return mimeType?.startsWith('image/') ?? false;
+}
+
+function getFileIcon(mimeType?: string): string {
+  if (!mimeType) return 'File';
+  if (mimeType.startsWith('image/')) return 'Image';
+  if (mimeType === 'application/pdf') return 'PDF';
+  if (mimeType.startsWith('text/')) return 'Text';
+  if (mimeType.includes('word')) return 'Doc';
+  return 'File';
 }
 
 interface SortableFileItemProps {
@@ -239,6 +256,8 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     url?: string;
     assetGroupId?: string;
     uploadStatus?: 'pending' | 'uploading' | 'uploaded' | 'processing' | 'published' | 'error';
+    mimeType?: string;
+    fileName?: string;
   }>>([]);
   const [isScanning, setIsScanning] = useState(false);
 
@@ -317,11 +336,20 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       if (error) throw error;
 
       if (itemData?.document_urls && Array.isArray(itemData.document_urls)) {
-        const documents = itemData.document_urls.map((doc: any) => ({
-          url: doc.url,
-          assetGroupId: doc.assetGroupId,
-          uploadStatus: 'published' as const
-        }));
+        const documents = itemData.document_urls.map((doc: any) => {
+          // Try to determine mime type from URL
+          const urlPath = doc.url?.split('?')[0] || '';
+          const mimeType = guessMimeType(urlPath);
+          const fileName = urlPath.split('/').pop() || 'document';
+
+          return {
+            url: doc.url,
+            assetGroupId: doc.assetGroupId,
+            uploadStatus: 'published' as const,
+            mimeType,
+            fileName
+          };
+        });
         setDocumentImages(documents);
       }
     } catch (error) {
@@ -627,11 +655,6 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     const existingFileNames = new Set(documentImages.map(d => d.file?.name || '').filter(Boolean));
 
     const newDocuments = files.map(file => {
-      if (!file.type.startsWith('image/')) {
-        setError('All documents must be image files');
-        return null;
-      }
-
       // Skip if file with same name already exists
       if (existingFileNames.has(file.name)) {
         console.log('[DOCUMENT] Skipping duplicate file:', file.name);
@@ -641,12 +664,16 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       return {
         file,
         url: URL.createObjectURL(file),
-        uploadStatus: 'pending' as const
+        uploadStatus: 'pending' as const,
+        mimeType: file.type,
+        fileName: file.name
       };
     }).filter(Boolean) as Array<{
       file: File;
       url: string;
       uploadStatus: 'pending';
+      mimeType: string;
+      fileName: string;
     }>;
 
     if (newDocuments.length > 0) {
@@ -1149,44 +1176,68 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           <div className="space-y-2">
             {documentImages.length > 0 && (
               <div className="grid grid-cols-4 gap-2">
-                {documentImages.map((doc, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={doc.url}
-                      alt={`Document ${index + 1}`}
-                      className="w-full h-24 object-cover rounded-lg bg-white cursor-pointer hover:opacity-80 transition-opacity"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setGalleryImages(documentImages.map(d => ({ url: d.url!, isVideo: false })));
-                        setGalleryInitialIndex(index);
-                        setShowGallery(true);
-                      }}
-                    />
-                    {doc.uploadStatus === 'uploading' && (
-                      <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
-                        <Loader className="w-4 h-4 text-white animate-spin" />
-                      </div>
-                    )}
-                    {doc.uploadStatus === 'published' && (
-                      <div className="absolute top-1 right-1 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded">
-                        ✓
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => removeDocumentImage(index)}
-                      className="absolute top-1 left-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
+                {documentImages.map((doc, index) => {
+                  const isImage = isImageMimeType(doc.mimeType);
+                  const fileIcon = getFileIcon(doc.mimeType);
+
+                  return (
+                    <div key={index} className="relative group">
+                      {isImage ? (
+                        <img
+                          src={doc.url}
+                          alt={`Document ${index + 1}`}
+                          className="w-full h-24 object-cover rounded-lg bg-white cursor-pointer hover:opacity-80 transition-opacity"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const imageDocuments = documentImages.filter(d => isImageMimeType(d.mimeType));
+                            setGalleryImages(imageDocuments.map(d => ({ url: d.url!, isVideo: false })));
+                            setGalleryInitialIndex(imageDocuments.findIndex(d => d === doc));
+                            setShowGallery(true);
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className="w-full h-24 rounded-lg bg-gray-700 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-600 transition-colors"
+                          onClick={() => {
+                            if (doc.url) {
+                              const link = document.createElement('a');
+                              link.href = doc.url;
+                              link.download = doc.fileName || 'document';
+                              link.click();
+                            }
+                          }}
+                        >
+                          <FileText className="w-8 h-8 text-gray-400 mb-1" />
+                          <span className="text-xs text-gray-300 text-center px-1">{fileIcon}</span>
+                          <Download className="w-3 h-3 text-gray-400 mt-1" />
+                        </div>
+                      )}
+                      {doc.uploadStatus === 'uploading' && (
+                        <div className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center">
+                          <Loader className="w-4 h-4 text-white animate-spin" />
+                        </div>
+                      )}
+                      {doc.uploadStatus === 'published' && (
+                        <div className="absolute top-1 right-1 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded">
+                          ✓
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removeDocumentImage(index)}
+                        className="absolute top-1 left-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
             <div>
               <input
                 type="file"
-                accept="image/*"
+                accept="image/*,.pdf,.txt,.doc,.docx"
                 multiple
                 onChange={handleDocumentImagesSelect}
                 className="hidden"
@@ -1198,7 +1249,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
               >
                 <Upload className="w-4 h-4 text-gray-400" />
                 <span className="text-sm text-gray-300">
-                  {documentImages.length > 0 ? 'Add More Documents' : 'Upload Documents'}
+                  {documentImages.length > 0 ? 'Add More Documents' : 'Upload Documents (Images, PDF, TXT, DOC)'}
                 </span>
               </label>
             </div>
@@ -1274,6 +1325,19 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           value={formData.description}
           onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
           rows={3}
+          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-white mb-1">
+          Additional Notes
+        </label>
+        <textarea
+          value={formData.additional_description}
+          onChange={(e) => setFormData(prev => ({ ...prev, additional_description: e.target.value }))}
+          rows={3}
+          placeholder="Any additional notes, comments, or information about this item..."
           className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
         />
       </div>
