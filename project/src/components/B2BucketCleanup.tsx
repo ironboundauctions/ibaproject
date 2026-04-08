@@ -140,11 +140,15 @@ export function B2BucketCleanup() {
 
       <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
         <h4 className="font-semibold text-sm text-blue-900 mb-2">About This Tool</h4>
-        <p className="text-xs text-blue-800 leading-relaxed">
+        <p className="text-xs text-blue-800 leading-relaxed mb-2">
           This tool scans your B2 bucket for files that no longer have corresponding records in the database.
-          This can happen when database records are deleted but files remain in storage. The scanner compares
-          all asset group IDs in B2 against the auction_files table to identify orphaned files.
+          This can happen when database records are deleted but files remain in storage.
         </p>
+        <div className="text-xs text-blue-800 space-y-1 mt-3">
+          <p><strong>B2 Asset Groups:</strong> Unique file groups physically stored in B2</p>
+          <p><strong>DB Asset Groups:</strong> Unique file groups referenced in your database (should match active inventory items)</p>
+          <p><strong>Orphaned Files:</strong> Files in B2 with no database record (safe to delete)</p>
+        </div>
       </div>
 
       <div className="flex space-x-3 mb-6">

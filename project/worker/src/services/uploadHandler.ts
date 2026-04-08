@@ -13,6 +13,9 @@ export class UploadHandler {
   ) {}
 
   async handlePCUpload(req: Request, res: Response): Promise<void> {
+    let assetGroupId: string | undefined;
+    let createdFileIds: string[] = [];
+
     try {
       if (!req.file) {
         res.status(400).json({ error: 'No file provided' });
@@ -35,7 +38,7 @@ export class UploadHandler {
       // Get the next display_order for this item (max + 1, or 0 if no files yet)
       const nextDisplayOrder = await this.db.getNextDisplayOrder(item_id);
 
-      const assetGroupId = crypto.randomUUID();
+      assetGroupId = crypto.randomUUID();
       const variants = await this.imageProcessor.processImage(req.file.buffer);
 
       const uploadResults = [];
@@ -56,6 +59,7 @@ export class UploadHandler {
           displayOrder: nextDisplayOrder
         }
       );
+      createdFileIds.push(sourceVariantId);
 
       await this.db.setVariantItemAndMetadata(sourceVariantId, item_id, req.file.originalname, variants.display.buffer.length, 'image/webp');
 
@@ -91,6 +95,7 @@ export class UploadHandler {
             displayOrder: nextDisplayOrder
           }
         );
+        createdFileIds.push(variantId);
 
         await this.db.setVariantItemAndMetadata(variantId, item_id, req.file.originalname, data.buffer.length, 'image/webp');
 
@@ -117,7 +122,31 @@ export class UploadHandler {
       });
 
     } catch (error) {
-      logger.error('PC upload failed', error as Error);
+      logger.error('PC upload failed, cleaning up', {
+        error: error as Error,
+        assetGroupId,
+        createdFileIds: createdFileIds.length
+      });
+
+      // Cleanup: Delete any files that were created in B2 and DB
+      if (assetGroupId) {
+        try {
+          await this.storage.deleteAssetGroup(assetGroupId, req.body.item_id);
+          logger.info('Cleaned up B2 files for failed upload', { assetGroupId });
+        } catch (cleanupError) {
+          logger.error('Failed to cleanup B2 files', { assetGroupId, error: cleanupError });
+        }
+      }
+
+      if (createdFileIds.length > 0) {
+        try {
+          await this.db.deleteFiles(createdFileIds);
+          logger.info('Cleaned up DB records for failed upload', { count: createdFileIds.length });
+        } catch (cleanupError) {
+          logger.error('Failed to cleanup DB records', { error: cleanupError });
+        }
+      }
+
       res.status(500).json({
         error: 'Upload failed',
         message: error instanceof Error ? error.message : 'Unknown error'
@@ -146,51 +175,69 @@ export class UploadHandler {
           batch.map(async (file) => {
             const assetGroupId = crypto.randomUUID();
 
-            // Process image to get all variants
-            const variants = await this.imageProcessor.processImage(file.buffer);
+            try {
+              // Process image to get all variants
+              const variants = await this.imageProcessor.processImage(file.buffer);
 
-            // Upload all variants to B2 using hybrid structure (no item_id)
-            const uploadedVariants = [];
+              // Upload all variants to B2 using hybrid structure (no item_id)
+              const uploadedVariants = [];
 
-            // Upload source variant
-            const sourceB2Key = `assets/${assetGroupId}/source.webp`;
-            const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
-            await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
-            uploadedVariants.push({
-              variant: 'source',
-              cdnUrl: sourceCdnUrl,
-              width: variants.display.width,
-              height: variants.display.height,
-            });
+              // Upload source variant
+              const sourceB2Key = `assets/${assetGroupId}/source.webp`;
+              const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
+              await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
+              uploadedVariants.push({
+                variant: 'source',
+                cdnUrl: sourceCdnUrl,
+                width: variants.display.width,
+                height: variants.display.height,
+              });
 
-            // Upload display and thumb variants
-            for (const [variantName, variantData] of Object.entries(variants)) {
-              if (variantName === 'display' || variantName === 'thumb') {
-                const b2Key = `assets/${assetGroupId}/${variantName}.webp`;
-                const cdnUrl = this.storage.getCdnUrl(b2Key);
-                await this.storage.uploadFile(b2Key, variantData.buffer, 'image/webp');
-                uploadedVariants.push({
-                  variant: variantName,
-                  cdnUrl,
-                  width: variantData.width,
-                  height: variantData.height,
-                });
+              // Upload display and thumb variants
+              for (const [variantName, variantData] of Object.entries(variants)) {
+                if (variantName === 'display' || variantName === 'thumb') {
+                  const b2Key = `assets/${assetGroupId}/${variantName}.webp`;
+                  const cdnUrl = this.storage.getCdnUrl(b2Key);
+                  await this.storage.uploadFile(b2Key, variantData.buffer, 'image/webp');
+                  uploadedVariants.push({
+                    variant: variantName,
+                    cdnUrl,
+                    width: variantData.width,
+                    height: variantData.height,
+                  });
+                }
               }
-            }
 
-            return {
-              fileName: file.originalname,
-              fileSize: file.size,
-              mimeType: file.mimetype,
-              assetGroupId,
-              cdnUrls: {
-                source: uploadedVariants.find(v => v.variant === 'source')?.cdnUrl,
-                display: uploadedVariants.find(v => v.variant === 'display')?.cdnUrl,
-                thumb: uploadedVariants.find(v => v.variant === 'thumb')?.cdnUrl,
-              },
-              width: variants.display.width,
-              height: variants.display.height,
-            };
+              return {
+                fileName: file.originalname,
+                fileSize: file.size,
+                mimeType: file.mimetype,
+                assetGroupId,
+                cdnUrls: {
+                  source: uploadedVariants.find(v => v.variant === 'source')?.cdnUrl,
+                  display: uploadedVariants.find(v => v.variant === 'display')?.cdnUrl,
+                  thumb: uploadedVariants.find(v => v.variant === 'thumb')?.cdnUrl,
+                },
+                width: variants.display.width,
+                height: variants.display.height,
+              };
+            } catch (error) {
+              // If upload fails, cleanup the B2 files that were created
+              logger.error('Failed to process file in bulk upload, cleaning up', {
+                fileName: file.originalname,
+                assetGroupId,
+                error
+              });
+
+              try {
+                await this.storage.deleteAssetGroup(assetGroupId);
+                logger.info('Cleaned up B2 files for failed bulk upload', { assetGroupId });
+              } catch (cleanupError) {
+                logger.error('Failed to cleanup B2 files for failed bulk upload', { assetGroupId, error: cleanupError });
+              }
+
+              throw error;
+            }
           })
         );
 

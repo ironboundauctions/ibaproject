@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Trash2, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { Trash2, AlertTriangle, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface CleanupResult {
@@ -9,10 +9,23 @@ interface CleanupResult {
   message: string;
 }
 
+interface OrphanedRecord {
+  id: string;
+  asset_group_id: string;
+  variant: string;
+  original_name: string;
+  cdn_url: string | null;
+  b2_key: string | null;
+  bytes: number | null;
+  item_id: string | null;
+  created_at: string;
+  issue: string;
+}
+
 export function OrphanedRecordsCleanup() {
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [orphanedRecords, setOrphanedRecords] = useState<any[]>([]);
+  const [orphanedRecords, setOrphanedRecords] = useState<OrphanedRecord[]>([]);
   const [cleanupResults, setCleanupResults] = useState<CleanupResult[]>([]);
 
   const scanForOrphaned = async () => {
@@ -24,18 +37,42 @@ export function OrphanedRecordsCleanup() {
       const { data, error } = await supabase
         .from('auction_files')
         .select('*')
-        .not('detached_at', 'is', null)
-        .or('bytes.is.null,cdn_url.is.null');
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      const orphaned = (data || []).filter(record => {
-        const hasNoSize = !record.bytes || record.bytes === 0;
-        const hasNoCdnUrl = !record.cdn_url;
-        const isDetached = !!record.detached_at;
+      const orphaned: OrphanedRecord[] = [];
 
-        return isDetached && (hasNoSize || hasNoCdnUrl);
-      });
+      for (const record of data || []) {
+        let issue = '';
+
+        if (!record.cdn_url && !record.b2_key) {
+          issue = 'No CDN URL or B2 key';
+        } else if (!record.cdn_url) {
+          issue = 'Missing CDN URL';
+        } else if (!record.b2_key) {
+          issue = 'Missing B2 key';
+        } else if (!record.bytes || record.bytes === 0) {
+          issue = 'Zero or null bytes';
+        } else if (!record.item_id) {
+          issue = 'No item_id (orphaned from inventory)';
+        }
+
+        if (issue) {
+          orphaned.push({
+            id: record.id,
+            asset_group_id: record.asset_group_id,
+            variant: record.variant,
+            original_name: record.original_name,
+            cdn_url: record.cdn_url,
+            b2_key: record.b2_key,
+            bytes: record.bytes,
+            item_id: record.item_id,
+            created_at: record.created_at,
+            issue
+          });
+        }
+      }
 
       setOrphanedRecords(orphaned);
     } catch (err) {
@@ -50,7 +87,8 @@ export function OrphanedRecordsCleanup() {
     if (!confirm(
       `⚠️ PERMANENT DELETION\n\n` +
       `This will permanently delete ${orphanedRecords.length} orphaned database record${orphanedRecords.length !== 1 ? 's' : ''}.\n\n` +
-      `These records have no actual files in B2 (null bytes/URL), so only database entries will be removed.\n\n` +
+      `This removes database entries for files with missing or invalid data.\n` +
+      `If B2 files exist for these records, they will NOT be deleted (use B2 Bucket Cleanup for that).\n\n` +
       `This action CANNOT be undone.\n\n` +
       `Continue?`
     )) {
@@ -74,7 +112,7 @@ export function OrphanedRecordsCleanup() {
             success: true,
             recordId: record.id,
             name: record.original_name || 'Unknown',
-            message: 'Successfully deleted orphaned record'
+            message: `Deleted: ${record.issue}`
           });
         } catch (err) {
           results.push({
@@ -111,19 +149,23 @@ export function OrphanedRecordsCleanup() {
     <div className="bg-white rounded-lg shadow-md p-6">
       <div className="flex items-center gap-2 mb-4">
         <AlertTriangle className="w-5 h-5 text-orange-600" />
-        <h2 className="text-xl font-semibold text-gray-900">Orphaned Records Cleanup</h2>
+        <h2 className="text-xl font-semibold text-gray-900">Database Records Cleanup</h2>
       </div>
 
       <div className="mb-6">
         <p className="text-sm text-gray-600 mb-4">
-          This tool scans for database records that are marked as removed but have no file data (null bytes or no CDN URL).
-          These records likely represent files that never made it to B2 or were already deleted but left behind database entries.
+          Scans for database records with missing or invalid data including:
         </p>
+        <ul className="text-sm text-gray-600 mb-4 ml-6 list-disc space-y-1">
+          <li>Records with NULL item_id (orphaned from inventory)</li>
+          <li>Records with missing CDN URL or B2 key</li>
+          <li>Records with zero or NULL bytes</li>
+          <li>Records with incomplete metadata</li>
+        </ul>
 
         <div className="bg-amber-50 border border-amber-200 rounded-md p-3 mb-4">
           <p className="text-sm text-amber-900">
-            <strong>Note:</strong> Since these records have no actual files in B2, deletion only removes database entries.
-            No files will be deleted from B2 or IronDrive.
+            <strong>Note:</strong> This only removes database entries. If B2 files exist, use "B2 Bucket Cleanup" to delete them.
           </p>
         </div>
 
@@ -131,9 +173,10 @@ export function OrphanedRecordsCleanup() {
           <button
             onClick={scanForOrphaned}
             disabled={scanning || cleaning}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 transition-colors"
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 transition-colors flex items-center gap-2"
           >
-            {scanning ? 'Scanning...' : 'Scan for Orphaned Records'}
+            {scanning && <Loader2 className="w-4 h-4 animate-spin" />}
+            {scanning ? 'Scanning Database...' : 'Scan Database Records'}
           </button>
 
           {orphanedRecords.length > 0 && (
@@ -163,19 +206,19 @@ export function OrphanedRecordsCleanup() {
                     File Name
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Asset Group
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Variant
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Size
+                    Issue
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    CDN URL
+                    Item ID
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Detached At
+                    Created
                   </th>
                 </tr>
               </thead>
@@ -186,32 +229,34 @@ export function OrphanedRecordsCleanup() {
                       <div className="text-sm font-medium text-gray-900">
                         {record.original_name || 'Unknown'}
                       </div>
-                      <div className="text-xs text-gray-500">{record.id}</div>
-                    </td>
-                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {record.variant}
+                      <div className="text-xs text-gray-500">{record.id.substring(0, 8)}...</div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
-                      <span className={`text-sm ${!record.bytes ? 'text-red-600 font-semibold' : 'text-gray-500'}`}>
-                        {formatFileSize(record.bytes)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-4">
-                      {record.cdn_url ? (
-                        <span className="text-xs text-gray-500 truncate block max-w-xs">
-                          {record.cdn_url}
-                        </span>
-                      ) : (
-                        <span className="text-sm text-red-600 font-semibold">null</span>
-                      )}
+                      <div className="text-xs text-gray-500 font-mono">
+                        {record.asset_group_id.substring(0, 8)}...
+                      </div>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <span className="px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">
-                        {record.published_status}
+                        {record.variant}
                       </span>
                     </td>
+                    <td className="px-4 py-4">
+                      <span className="text-sm text-red-600 font-semibold">
+                        {record.issue}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
+                      {record.item_id ? (
+                        <span className="text-xs text-gray-500 font-mono">
+                          {record.item_id.substring(0, 8)}...
+                        </span>
+                      ) : (
+                        <span className="text-sm text-red-600 font-semibold">NULL</span>
+                      )}
+                    </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {record.detached_at ? new Date(record.detached_at).toLocaleDateString() : 'N/A'}
+                      {new Date(record.created_at).toLocaleDateString()}
                     </td>
                   </tr>
                 ))}
