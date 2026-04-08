@@ -229,53 +229,22 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         setJobId(batchJobId);
         await bulkUploadService.persistUploadedFiles(batchJobId, uploaded);
 
-        // Build a map from sourceKey → UploadedFileInfo so we preserve assetGroupIds
-        // Worker assigns its own assetGroupIds, so update ironDriveFiles to match
-        const sourceKeyToUploaded = new Map(uploaded.map(u => [u.sourceKey, u]));
-        const updatedIronDriveFiles = ironDriveFiles.map(f => {
-          const up = sourceKeyToUploaded.get(f.source_key);
-          return up ? { ...f, assetGroupId: up.assetGroupId } : f;
-        });
-        setIronDriveFiles(updatedIronDriveFiles);
-
-        // Step 2: Fetch CDN thumb images as File objects for barcode scanning
+        // Step 2: Build analysis from worker-returned barcode data (no CDN fetch needed)
         setStage('analyzing');
-        const thumbFiles: File[] = [];
-        for (const up of uploaded) {
-          try {
-            const resp = await fetch(up.cdnUrls.thumb);
-            const blob = await resp.blob();
-            thumbFiles.push(new File([blob], up.fileName, { type: 'image/webp' }));
-          } catch {
-            thumbFiles.push(new File([], up.fileName, { type: 'image/webp' }));
-          }
-        }
+        setAnalysisProgress({ current: uploaded.length, total: uploaded.length });
 
-        // Step 3: Scan barcodes on CDN thumbs (same as PC flow)
-        analysis = await bulkUploadService.analyzeBatch(thumbFiles, (current, total) => {
-          setAnalysisProgress({ current, total });
-        });
-
-        // Remap assetGroupIds from thumbFiles back to uploaded file assetGroupIds
-        const fileNameToAssetGroupId = new Map(uploaded.map(u => [u.fileName, u.assetGroupId]));
-        analysis.grouped = analysis.grouped.map(g => ({
-          ...g,
-          files: g.files.map(f => ({
-            ...f,
-            assetGroupId: fileNameToAssetGroupId.get(f.fileName) || f.assetGroupId,
-          })),
-        }));
-        analysis.ungrouped = analysis.ungrouped.map(f => ({
-          ...f,
-          assetGroupId: fileNameToAssetGroupId.get(f.fileName) || f.assetGroupId,
-        }));
+        analysis = bulkUploadService.analyzeFromUploadedFiles(uploaded);
 
         setAnalysisResults(analysis);
         setGroups(analysis.grouped);
         setUngrouped(analysis.ungrouped);
 
         // Update the existing batch job with final analysis results
-        await bulkUploadService.updateBatchAnalysis(batchJobId, thumbFiles, analysis);
+        await bulkUploadService.updateBatchAnalysis(
+          batchJobId,
+          uploaded.map(u => new File([], u.fileName, { type: u.mimeType })),
+          analysis
+        );
 
         if (analysis.grouped.length > 0) {
           const inventoryNumbers = analysis.grouped.map(g => g.inv_number);
@@ -841,24 +810,21 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
               {sourceMode === 'irondrive' && ironDriveFiles.length > 0 && (
                 <div className="space-y-4">
-                  <h3 className="font-medium text-gray-900">
-                    Selected Files ({ironDriveFiles.length})
-                    <span className="ml-2 text-sm text-blue-600">(from IronDrive)</span>
-                  </h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {ironDriveFiles.map((file) => (
-                      <div key={file.assetGroupId} className="relative group bg-gray-100 rounded-lg h-32 flex items-center justify-center">
-                        <p className="text-xs text-gray-600 text-center px-2 break-all">
-                          {file.filename}
-                        </p>
-                      </div>
-                    ))}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+                    <ExternalLink className="w-10 h-10 text-blue-500 mx-auto mb-3" />
+                    <p className="text-2xl font-bold text-blue-900 mb-1">{ironDriveFiles.length}</p>
+                    <p className="text-blue-700 font-medium">
+                      image{ironDriveFiles.length !== 1 ? 's' : ''} selected from IronDrive
+                    </p>
+                    <p className="text-sm text-blue-500 mt-2">
+                      Files will be transferred and scanned for barcodes automatically
+                    </p>
                   </div>
                   <button
                     onClick={handleAnalyze}
                     className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 transition-colors"
                   >
-                    Continue with {ironDriveFiles.length} IronDrive Images
+                    Process {ironDriveFiles.length} IronDrive Images
                   </button>
                 </div>
               )}
@@ -987,11 +953,15 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                         <div className="p-4 grid grid-cols-4 gap-4">
                           {group.files.map((file) => {
                             const originalFile = selectedFiles.find(f => f.name === file.fileName);
+                            const uploadedFile = uploadedFiles.find(f => f.assetGroupId === file.assetGroupId || f.fileName === file.fileName);
+                            const thumbSrc = originalFile
+                              ? URL.createObjectURL(originalFile)
+                              : uploadedFile?.cdnUrls?.thumb;
                             return (
                               <div key={file.assetGroupId} className="relative group">
-                                {originalFile ? (
+                                {thumbSrc ? (
                                   <img
-                                    src={URL.createObjectURL(originalFile)}
+                                    src={thumbSrc}
                                     alt={file.fileName}
                                     className="w-full h-24 object-cover rounded-lg"
                                   />
@@ -1066,6 +1036,10 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                   <div className="grid grid-cols-4 gap-4">
                     {ungrouped.map((file) => {
                       const originalFile = selectedFiles.find(f => f.name === file.fileName);
+                      const uploadedFile = uploadedFiles.find(f => f.assetGroupId === file.assetGroupId || f.fileName === file.fileName);
+                      const thumbSrc = originalFile
+                        ? URL.createObjectURL(originalFile)
+                        : uploadedFile?.cdnUrls?.thumb;
                       return (
                         <div
                           key={file.assetGroupId}
@@ -1074,9 +1048,9 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                           }`}
                           onClick={() => toggleUngroupedSelected(file.assetGroupId)}
                         >
-                          {originalFile ? (
+                          {thumbSrc ? (
                             <img
-                              src={URL.createObjectURL(originalFile)}
+                              src={thumbSrc}
                               alt={file.fileName}
                               className="w-full h-24 object-cover rounded-lg"
                             />

@@ -17,6 +17,7 @@ export interface UploadedFileInfo {
   };
   width: number;
   height: number;
+  barcodeValue?: string;
 }
 
 export interface GroupedFile {
@@ -134,6 +135,42 @@ export const bulkUploadService = {
       ungrouped,
       errors,
     };
+  },
+
+  /**
+   * Build analysis results from already-uploaded files that have worker-scanned barcodes.
+   * Used for IronDrive flow where barcode scanning happens server-side during upload.
+   */
+  analyzeFromUploadedFiles(uploaded: UploadedFileInfo[]): AnalysisResults {
+    const grouped: GroupedItem[] = [];
+    const ungrouped: GroupedFile[] = [];
+    const errors: { fileName: string; error: string }[] = [];
+
+    let currentGroup: GroupedItem | null = null;
+
+    for (const up of uploaded) {
+      if (up.barcodeValue) {
+        if (currentGroup) {
+          grouped.push(currentGroup);
+        }
+        currentGroup = {
+          inv_number: up.barcodeValue,
+          files: [{ fileName: up.fileName, assetGroupId: up.assetGroupId }],
+        };
+      } else {
+        if (currentGroup) {
+          currentGroup.files.push({ fileName: up.fileName, assetGroupId: up.assetGroupId });
+        } else {
+          ungrouped.push({ fileName: up.fileName, assetGroupId: up.assetGroupId });
+        }
+      }
+    }
+
+    if (currentGroup) {
+      grouped.push(currentGroup);
+    }
+
+    return { grouped, ungrouped, errors };
   },
 
   /* REVERT POINT 1: WORKER-BASED ANALYSIS (COMMENTED OUT FOR TESTING)

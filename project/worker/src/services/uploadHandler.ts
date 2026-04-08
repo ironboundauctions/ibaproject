@@ -3,10 +3,13 @@ import { ImageProcessor } from './imageProcessor.js';
 import { StorageService } from './storage.js';
 import { DatabaseService } from './database.js';
 import { RaidService } from './raid.js';
+import { BarcodeScanner } from './barcodeScanner.js';
 import { logger } from '../logger.js';
 import crypto from 'crypto';
 
 export class UploadHandler {
+  private barcodeScanner = new BarcodeScanner();
+
   constructor(
     private db: DatabaseService,
     private imageProcessor: ImageProcessor,
@@ -416,6 +419,9 @@ export class UploadHandler {
               const thumbCdnUrl = this.storage.getCdnUrl(thumbB2Key);
               await this.storage.uploadFile(thumbB2Key, variants.thumb.buffer, 'image/webp');
 
+              // Scan barcode from the original buffer while we have it in memory
+              const barcodeResult = await this.barcodeScanner.scanBuffer(buffer, fileName, assetGroupId);
+
               return {
                 fileName,
                 sourceKey,
@@ -429,6 +435,7 @@ export class UploadHandler {
                 },
                 width: variants.display.width,
                 height: variants.display.height,
+                barcodeValue: barcodeResult.barcodeValue,
               };
             } catch (error) {
               logger.error('Failed to process IronDrive file', { sourceKey, assetGroupId, error });
