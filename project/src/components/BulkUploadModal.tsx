@@ -42,6 +42,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const [jobId, setJobId] = useState<string>('');
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [analysisProgress, setAnalysisProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [processingProgress, setProcessingProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [newGroupNumber, setNewGroupNumber] = useState<string>('');
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
@@ -211,7 +212,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       let analysis: AnalysisResults;
 
       if (sourceMode === 'irondrive') {
-        // Step 1: Upload IronDrive files via worker (RAID → B2)
+        // Step 1: Upload IronDrive files via worker (RAID → B2, no barcode scan)
         setStage('uploading');
         const sourceKeys = ironDriveFiles.map(f => f.source_key);
         const uploaded = await bulkUploadService.uploadIronDriveFiles(
@@ -220,8 +221,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         );
         setUploadedFiles(uploaded);
 
-        // Persist uploaded assetGroupIds to DB immediately so expiry cleanup
-        // can find and delete these B2 files if the user closes the window
+        // Persist to DB immediately so cleanup can find these B2 files if user closes window
         const batchJobId = await bulkUploadService.createBatchJob(
           ironDriveFiles.map(f => new File([], f.filename, { type: f.mime_type })),
           { grouped: [], ungrouped: [], errors: [] }
@@ -229,17 +229,19 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         setJobId(batchJobId);
         await bulkUploadService.persistUploadedFiles(batchJobId, uploaded);
 
-        // Step 2: Build analysis from worker-returned barcode data (no CDN fetch needed)
+        // Step 2: Scan barcodes in browser from CDN source URLs (same as PC flow)
         setStage('analyzing');
-        setAnalysisProgress({ current: uploaded.length, total: uploaded.length });
+        setAnalysisProgress({ current: 0, total: uploaded.length });
 
-        analysis = bulkUploadService.analyzeFromUploadedFiles(uploaded);
+        analysis = await bulkUploadService.scanIronDriveUploads(
+          uploaded,
+          (current, total) => setAnalysisProgress({ current, total })
+        );
 
         setAnalysisResults(analysis);
         setGroups(analysis.grouped);
         setUngrouped(analysis.ungrouped);
 
-        // Update the existing batch job with final analysis results
         await bulkUploadService.updateBatchAnalysis(
           batchJobId,
           uploaded.map(u => new File([], u.fileName, { type: u.mimeType })),
@@ -509,9 +511,10 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         }));
 
         setStage('processing');
+        setProcessingProgress({ current: 0, total: groups.length });
 
         // Confirm batch - files are already in B2, just create inventory items and link
-        const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds, false);
+        const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds, true, (current, total) => setProcessingProgress({ current, total }));
 
         if (result.errors.length > 0) {
           console.error('[BULK-UPLOAD] Some items failed to create:', result.errors);
@@ -573,9 +576,10 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         }));
 
         setStage('processing');
+        setProcessingProgress({ current: 0, total: groups.length });
 
         // STEP 4: Confirm batch and create inventory items (PC flow)
-        const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds, false);
+        const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds, false, (current, total) => setProcessingProgress({ current, total }));
 
         if (result.errors.length > 0) {
           console.error('[BULK-UPLOAD] Some items failed to create:', result.errors);
@@ -817,7 +821,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                       image{ironDriveFiles.length !== 1 ? 's' : ''} selected from IronDrive
                     </p>
                     <p className="text-sm text-blue-500 mt-2">
-                      Files will be transferred and scanned for barcodes automatically
+                      Files will be uploaded to storage, then barcodes scanned in your browser
                     </p>
                   </div>
                   <button
@@ -832,24 +836,33 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
           )}
 
           {stage === 'analyzing' && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-              <p className="text-lg font-medium text-gray-900 mb-2">Scanning for barcodes...</p>
-              <p className="text-sm text-gray-500">Using browser-side parallel scanning for fast results</p>
-              {analysisProgress.total > 0 && (
-                <div className="mt-4 w-full max-w-md">
-                  <div className="flex justify-between text-sm text-gray-600 mb-1">
-                    <span>Processing files</span>
-                    <span>{analysisProgress.current} / {analysisProgress.total}</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${(analysisProgress.current / analysisProgress.total) * 100}%` }}
-                    />
-                  </div>
+            <div className="flex flex-col items-center justify-center py-16 px-8">
+              <div className="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center mb-6">
+                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+              </div>
+              <p className="text-lg font-semibold text-gray-900 mb-1">Scanning for barcodes</p>
+              <p className="text-sm text-gray-500 mb-8">
+                {sourceMode === 'irondrive' ? 'Reading uploaded images for barcode data...' : 'Reading each image for barcode data'}
+              </p>
+              <div className="w-full max-w-sm">
+                <div className="flex justify-between text-sm font-medium mb-2">
+                  <span className="text-gray-600">Progress</span>
+                  <span className="text-blue-600">
+                    {analysisProgress.total > 0 ? `${analysisProgress.current} / ${analysisProgress.total}` : 'Starting...'}
+                  </span>
                 </div>
-              )}
+                <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out"
+                    style={{ width: analysisProgress.total > 0 ? `${(analysisProgress.current / analysisProgress.total) * 100}%` : '0%' }}
+                  />
+                </div>
+                {analysisProgress.total > 0 && (
+                  <p className="text-xs text-gray-400 mt-2 text-center">
+                    {Math.round((analysisProgress.current / analysisProgress.total) * 100)}% complete
+                  </p>
+                )}
+              </div>
             </div>
           )}
 
@@ -877,14 +890,38 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
           */}
 
           {stage === 'uploading' && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-              <p className="text-lg font-medium text-gray-900 mb-2">
-                {sourceMode === 'irondrive' ? 'Downloading from IronDrive and uploading to storage...' : 'Uploading confirmed files...'}
+            <div className="flex flex-col items-center justify-center py-16 px-8">
+              <div className="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center mb-6">
+                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+              </div>
+              <p className="text-lg font-semibold text-gray-900 mb-1">
+                {sourceMode === 'irondrive' ? 'Transferring from IronDrive' : 'Uploading files to storage'}
               </p>
-              <p className="text-sm text-gray-500">
-                {uploadProgress.current} of {uploadProgress.total > 0 ? uploadProgress.total : ironDriveFiles.length} files processed
+              <p className="text-sm text-gray-500 mb-8">
+                {sourceMode === 'irondrive' ? 'Downloading, converting, and uploading to storage...' : 'Sending files to secure storage...'}
               </p>
+              <div className="w-full max-w-sm">
+                {(() => {
+                  const total = uploadProgress.total > 0 ? uploadProgress.total : ironDriveFiles.length;
+                  const current = uploadProgress.current;
+                  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+                  return (
+                    <>
+                      <div className="flex justify-between text-sm font-medium mb-2">
+                        <span className="text-gray-600">Files uploaded</span>
+                        <span className="text-blue-600">{current} / {total}</span>
+                      </div>
+                      <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                        <div
+                          className="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out"
+                          style={{ width: total > 0 ? `${pct}%` : '0%' }}
+                        />
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2 text-center">{pct}% complete</p>
+                    </>
+                  );
+                })()}
+              </div>
             </div>
           )}
 
@@ -1117,21 +1154,34 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
           )}
 
           {stage === 'processing' && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-              <p className="text-lg font-medium text-gray-900 mb-2">Creating inventory items...</p>
-              <p className="text-sm text-gray-500 mb-4">Linking files and creating database records</p>
-
-              {/* Progress bar */}
-              <div className="w-full max-w-md">
-                <div className="bg-gray-200 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-blue-600 h-full transition-all duration-300 ease-out"
-                    style={{ width: '100%' }}
-                  >
-                    <div className="w-full h-full bg-blue-400 animate-pulse" />
+            <div className="flex flex-col items-center justify-center py-16 px-8">
+              <div className="w-16 h-16 rounded-full bg-green-50 flex items-center justify-center mb-6">
+                <Loader2 className="w-8 h-8 text-green-600 animate-spin" />
+              </div>
+              <p className="text-lg font-semibold text-gray-900 mb-1">Creating inventory items</p>
+              <p className="text-sm text-gray-500 mb-8">Linking files and saving to database</p>
+              <div className="w-full max-w-sm">
+                {processingProgress.total > 0 ? (
+                  <>
+                    <div className="flex justify-between text-sm font-medium mb-2">
+                      <span className="text-gray-600">Items created</span>
+                      <span className="text-green-600">{processingProgress.current} / {processingProgress.total}</span>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                      <div
+                        className="bg-green-600 h-3 rounded-full transition-all duration-300 ease-out"
+                        style={{ width: `${(processingProgress.current / processingProgress.total) * 100}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2 text-center">
+                      {Math.round((processingProgress.current / processingProgress.total) * 100)}% complete
+                    </p>
+                  </>
+                ) : (
+                  <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                    <div className="bg-green-600 h-3 rounded-full w-1/3 animate-pulse" />
                   </div>
-                </div>
+                )}
               </div>
             </div>
           )}

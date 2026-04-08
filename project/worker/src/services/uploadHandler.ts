@@ -391,7 +391,7 @@ export class UploadHandler {
 
       logger.info('Processing IronDrive bulk upload', { count: sourceKeys.length });
 
-      const BATCH_SIZE = 5;
+      const BATCH_SIZE = 10;
       const allResults: any[] = [];
       const allErrors: any[] = [];
 
@@ -408,19 +408,18 @@ export class UploadHandler {
               const variants = await this.imageProcessor.processImage(buffer);
 
               const sourceB2Key = `assets/${assetGroupId}/source.webp`;
-              const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
-              await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
-
               const displayB2Key = `assets/${assetGroupId}/display.webp`;
-              const displayCdnUrl = this.storage.getCdnUrl(displayB2Key);
-              await this.storage.uploadFile(displayB2Key, variants.display.buffer, 'image/webp');
-
               const thumbB2Key = `assets/${assetGroupId}/thumb.webp`;
-              const thumbCdnUrl = this.storage.getCdnUrl(thumbB2Key);
-              await this.storage.uploadFile(thumbB2Key, variants.thumb.buffer, 'image/webp');
 
-              // Scan barcode from the original buffer while we have it in memory
-              const barcodeResult = await this.barcodeScanner.scanBuffer(buffer, fileName, assetGroupId);
+              const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
+              const displayCdnUrl = this.storage.getCdnUrl(displayB2Key);
+              const thumbCdnUrl = this.storage.getCdnUrl(thumbB2Key);
+
+              await Promise.all([
+                this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp'),
+                this.storage.uploadFile(displayB2Key, variants.display.buffer, 'image/webp'),
+                this.storage.uploadFile(thumbB2Key, variants.thumb.buffer, 'image/webp'),
+              ]);
 
               return {
                 fileName,
@@ -435,7 +434,6 @@ export class UploadHandler {
                 },
                 width: variants.display.width,
                 height: variants.display.height,
-                barcodeValue: barcodeResult.barcodeValue,
               };
             } catch (error) {
               logger.error('Failed to process IronDrive file', { sourceKey, assetGroupId, error });

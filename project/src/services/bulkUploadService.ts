@@ -138,6 +138,60 @@ export const bulkUploadService = {
   },
 
   /**
+   * IRONDRIVE STEP 2: After files are uploaded to B2, scan their CDN source URLs
+   * in the browser using Quagga2 - same as PC flow but from CDN URLs instead of local files.
+   */
+  async scanIronDriveUploads(
+    uploaded: UploadedFileInfo[],
+    onProgress?: (current: number, total: number) => void
+  ): Promise<AnalysisResults> {
+    console.log('[IRONDRIVE-SCAN] Starting browser-side barcode scan for', uploaded.length, 'CDN files');
+
+    const scanResults: Array<{ fileName: string; barcode: string | null }> = [];
+
+    for (let i = 0; i < uploaded.length; i++) {
+      const file = uploaded[i];
+      try {
+        const barcode = await BarcodeScanner.scanUrl(file.cdnUrls.source);
+        scanResults.push({ fileName: file.fileName, barcode });
+        console.log(`[IRONDRIVE-SCAN] #${i + 1}/${uploaded.length}: ${file.fileName} → ${barcode ? `"${barcode}"` : 'NO BARCODE'}`);
+      } catch {
+        scanResults.push({ fileName: file.fileName, barcode: null });
+      }
+      onProgress?.(i + 1, uploaded.length);
+    }
+
+    const grouped: GroupedItem[] = [];
+    const ungrouped: GroupedFile[] = [];
+    const errors: { fileName: string; error: string }[] = [];
+    let currentGroup: GroupedItem | null = null;
+
+    for (let i = 0; i < scanResults.length; i++) {
+      const result = scanResults[i];
+      const up = uploaded[i];
+
+      if (result.barcode) {
+        if (currentGroup) grouped.push(currentGroup);
+        currentGroup = {
+          inv_number: result.barcode,
+          files: [{ fileName: up.fileName, assetGroupId: up.assetGroupId }],
+        };
+      } else {
+        if (currentGroup) {
+          currentGroup.files.push({ fileName: up.fileName, assetGroupId: up.assetGroupId });
+        } else {
+          ungrouped.push({ fileName: up.fileName, assetGroupId: up.assetGroupId });
+        }
+      }
+    }
+
+    if (currentGroup) grouped.push(currentGroup);
+
+    console.log('[IRONDRIVE-SCAN] Complete:', { grouped: grouped.length, ungrouped: ungrouped.length });
+    return { grouped, ungrouped, errors };
+  },
+
+  /**
    * Build analysis results from already-uploaded files that have worker-scanned barcodes.
    * Used for IronDrive flow where barcode scanning happens server-side during upload.
    */
@@ -398,7 +452,8 @@ export const bulkUploadService = {
         assetGroupId: string;
       }>;
     }>,
-    isIronDrive: boolean = false
+    isIronDrive: boolean = false,
+    onProgress?: (current: number, total: number) => void
   ): Promise<{ created: string[]; errors: any[] }> {
     console.log('[BULK-UPLOAD] Starting confirmBatch:', {
       jobId,
@@ -440,74 +495,29 @@ export const bulkUploadService = {
       assetGroupIds: g.files.map(f => f.assetGroupId)
     })));
 
-    // Link files to database
-    if (isIronDrive) {
-      // For IronDrive files, create auction_files records directly
-      console.log('[BULK-UPLOAD] Creating auction_files records for IronDrive files...');
-
-      for (const group of groupsWithMetadata) {
-        for (let i = 0; i < group.files.length; i++) {
-          const file = group.files[i];
-          const uploaded = fileMap.get(file.fileName);
-
-          if (!uploaded) {
-            console.error('[BULK-UPLOAD] No uploaded file info for:', file.fileName);
-            continue;
-          }
-
-          const { error: insertError } = await supabase.from('auction_files').insert({
-            item_id: null, // Will be set when inventory item is created
-            asset_group_id: file.assetGroupId,
-            variant: 'source',
-            source_key: uploaded.cdnUrls.source,
-            original_name: file.fileName,
-            mime_type: uploaded.mimeType,
-            published_status: 'pending',
-            display_order: i
-          });
-
-          if (insertError) {
-            console.error('[BULK-UPLOAD] Error inserting auction_file:', insertError);
-            throw new Error(`Failed to create auction_file for ${file.fileName}: ${insertError.message}`);
-          }
-        }
-      }
-
-      console.log('[BULK-UPLOAD] IronDrive auction_files created successfully');
-    } else {
-      // For PC files, use worker to process files
-      console.log('[BULK-UPLOAD] Calling bulk-process endpoint...');
-      const response = await fetch(`${WORKER_URL}/api/bulk-process`, {
+    // For PC uploads, also notify the worker for thumbnail/variant generation (fire and forget)
+    if (!isIronDrive) {
+      fetch(`${WORKER_URL}/api/bulk-process`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ groups: groupsWithMetadata }),
+      }).then(r => r.json()).then(data => {
+        console.log('[BULK-UPLOAD] Worker processing response:', data);
+      }).catch(err => {
+        console.warn('[BULK-UPLOAD] Worker processing failed (non-critical):', err);
       });
-
-      if (!response.ok) {
-        let errorMessage = 'Bulk process failed';
-        try {
-          const error = await response.json();
-          errorMessage = error.message || errorMessage;
-        } catch {
-          const errorText = await response.text();
-          errorMessage = errorText || `Process failed with status ${response.status}`;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const processData = await response.json();
-      console.log('[BULK-UPLOAD] Bulk-process response:', processData);
     }
 
-    // Now create inventory items for each group
+    // Create inventory items first, then auction_files with the real item_id
     const createdItems: string[] = [];
     const errors: any[] = [];
 
-    console.log('[BULK-UPLOAD] Creating inventory items for', groups.length, 'groups');
+    console.log('[BULK-UPLOAD] Creating inventory items for', groupsWithMetadata.length, 'groups');
 
-    for (const group of groups) {
+    let processedCount = 0;
+    onProgress?.(0, groupsWithMetadata.length);
+
+    for (const group of groupsWithMetadata) {
       console.log('[BULK-UPLOAD] Processing group:', group.inv_number, 'with', group.files.length, 'files');
       try {
         // Check if inventory number already exists (including soft-deleted items)
@@ -576,58 +586,59 @@ export const bulkUploadService = {
 
         console.log('[BULK-UPLOAD] Created inventory item:', newItem.id);
 
-        // Update auction_files to link to this item
-        const assetGroupIds = group.files.map(f => f.assetGroupId);
+        // Insert auction_files records now that we have the item_id
+        console.log('[BULK-UPLOAD] Creating auction_files records for item:', newItem.id);
+        let fileInsertFailed = false;
 
-        console.log('[BULK] Attempting to link files to item', {
-          inv_number: group.inv_number,
-          item_id: newItem.id,
-          assetGroupIds,
-          fileCount: group.files.length,
-        });
+        for (let i = 0; i < group.files.length; i++) {
+          const file = group.files[i];
+          const uploaded = fileMap.get(file.fileName);
 
-        // First check if files exist in auction_files
-        const { data: existingFiles, error: checkError } = await supabase
-          .from('auction_files')
-          .select('id, asset_group_id, item_id, variant')
-          .in('asset_group_id', assetGroupIds);
+          if (!uploaded || !uploaded.cdnUrls?.source) {
+            console.error('[BULK-UPLOAD] No uploaded file info for:', file.fileName);
+            continue;
+          }
 
-        console.log('[BULK] Existing files check:', {
-          inv_number: group.inv_number,
-          existingCount: existingFiles?.length || 0,
-          existing: existingFiles,
-          checkError,
-        });
+          const variantsToInsert: Array<{ variant: string; cdn_url: string; source_key: string }> = [
+            { variant: 'source', cdn_url: uploaded.cdnUrls.source, source_key: uploaded.cdnUrls.source },
+          ];
 
-        if (!existingFiles || existingFiles.length === 0) {
-          console.error('[BULK] No files found in database for asset groups');
+          if (uploaded.cdnUrls.display) {
+            variantsToInsert.push({ variant: 'display', cdn_url: uploaded.cdnUrls.display, source_key: uploaded.cdnUrls.display });
+          }
+          if (uploaded.cdnUrls.thumb) {
+            variantsToInsert.push({ variant: 'thumb', cdn_url: uploaded.cdnUrls.thumb, source_key: uploaded.cdnUrls.thumb });
+          }
+
+          for (const v of variantsToInsert) {
+            const { error: insertError } = await supabase.from('auction_files').insert({
+              item_id: newItem.id,
+              asset_group_id: file.assetGroupId,
+              variant: v.variant,
+              source_key: v.source_key,
+              cdn_url: v.cdn_url,
+              original_name: file.fileName,
+              mime_type: uploaded.mimeType,
+              published_status: v.variant === 'source' ? 'pending' : 'published',
+              display_order: i
+            });
+
+            if (insertError) {
+              console.error('[BULK-UPLOAD] Error inserting auction_file variant:', v.variant, insertError);
+              if (v.variant === 'source') fileInsertFailed = true;
+            }
+          }
+        }
+
+        if (fileInsertFailed) {
           errors.push({
             inv_number: group.inv_number,
-            error: `Item created but no files found in database. Expected ${assetGroupIds.length} asset groups.`,
+            error: 'Item created but some files failed to attach',
           });
           continue;
         }
 
-        const { data: linkedFiles, error: linkError } = await supabase
-          .from('auction_files')
-          .update({ item_id: newItem.id })
-          .in('asset_group_id', assetGroupIds)
-          .select('id, asset_group_id');
-
-        if (linkError) {
-          console.error('[BULK] Failed to link files:', linkError);
-          errors.push({
-            inv_number: group.inv_number,
-            error: `Item created but failed to link files: ${linkError.message}`,
-          });
-          continue;
-        }
-
-        console.log('[BULK] Files linked successfully:', {
-          inv_number: group.inv_number,
-          linked_count: linkedFiles?.length || 0,
-          expected_count: assetGroupIds.length,
-        });
+        console.log('[BULK-UPLOAD] auction_files created and linked successfully for:', group.inv_number);
 
         console.log('[BULK-UPLOAD] Successfully created and linked item:', group.inv_number);
         createdItems.push(newItem.id);
@@ -638,6 +649,8 @@ export const bulkUploadService = {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
+      processedCount++;
+      onProgress?.(processedCount, groupsWithMetadata.length);
     }
 
     console.log('[BULK-UPLOAD] Batch processing complete:', {
