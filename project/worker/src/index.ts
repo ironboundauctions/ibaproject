@@ -189,9 +189,13 @@ class MediaPublishingWorker {
         logger.info('B2 orphaned files scan requested');
         const startTime = Date.now();
 
-        // Get all asset groups from B2
-        const b2AssetGroups = await this.storage.listAllAssetGroups();
-        logger.info('B2 asset groups found', { count: b2AssetGroups.length });
+        // Get all files from B2 (grouped by asset group)
+        const b2Files = await this.storage.listAllAssetGroups();
+        logger.info('B2 files found', { totalFiles: b2Files.length });
+
+        // Get unique asset groups from B2
+        const b2AssetGroupIds = new Set(b2Files.map(f => f.assetGroupId));
+        logger.info('B2 asset groups found', { count: b2AssetGroupIds.size });
 
         // Get all unique asset groups from database
         const dbAssetGroups = await this.db.getAllAssetGroups();
@@ -200,19 +204,20 @@ class MediaPublishingWorker {
         // Create a set of database asset group IDs for fast lookup
         const dbAssetGroupSet = new Set(dbAssetGroups);
 
-        // Find orphaned files
-        const orphanedFiles = b2AssetGroups.filter(file => !dbAssetGroupSet.has(file.assetGroupId));
+        // Find ALL orphaned files (files whose asset group is not in database)
+        const orphanedFiles = b2Files.filter(file => !dbAssetGroupSet.has(file.assetGroupId));
         const estimatedWastedSpace = orphanedFiles.reduce((sum, file) => sum + file.size, 0);
 
         logger.info('B2 scan complete', {
-          totalB2Files: b2AssetGroups.length,
+          totalB2Files: b2Files.length,
+          totalB2AssetGroups: b2AssetGroupIds.size,
           totalDbAssetGroups: dbAssetGroups.length,
-          orphanedCount: orphanedFiles.length,
+          orphanedFiles: orphanedFiles.length,
           wastedSpace: estimatedWastedSpace
         });
 
         res.json({
-          totalB2Files: b2AssetGroups.length,
+          totalB2Files: b2AssetGroupIds.size,
           totalDbAssetGroups: dbAssetGroups.length,
           orphanedFiles: orphanedFiles.map(f => ({
             key: f.key,
@@ -239,27 +244,63 @@ class MediaPublishingWorker {
           return;
         }
 
-        logger.info('B2 orphaned files cleanup requested', { count: fileKeys.length });
+        logger.info('B2 orphaned files cleanup requested', { fileCount: fileKeys.length });
+
+        // Extract unique asset group IDs from file keys
+        const assetGroupIds = new Set<string>();
+        for (const key of fileKeys) {
+          // Extract from path: assets/{itemId}/{assetGroupId}/file or assets/{assetGroupId}/file
+          const parts = key.split('/');
+
+          if (parts.length >= 3) {
+            const potentialAssetGroupId = parts[2];
+            if (potentialAssetGroupId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+              assetGroupIds.add(potentialAssetGroupId);
+            } else {
+              // Old format: assets/{assetGroupId}/file
+              const oldFormatId = parts[1];
+              if (oldFormatId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+                assetGroupIds.add(oldFormatId);
+              }
+            }
+          }
+        }
+
+        logger.info('Deleting asset group folders', { assetGroupCount: assetGroupIds.size });
 
         let deleted = 0;
         let failed = 0;
+        let totalFilesDeleted = 0;
 
-        for (const key of fileKeys) {
+        for (const assetGroupId of assetGroupIds) {
           try {
-            await this.storage.deleteFile(key);
+            // Get all files in this asset group folder
+            const files = await this.storage.listAssetGroupFiles(assetGroupId);
+            logger.info('Deleting asset group folder', { assetGroupId, fileCount: files.length });
+
+            // Delete the entire folder
+            await this.storage.deleteAssetGroup(assetGroupId);
+
             deleted++;
+            totalFilesDeleted += files.length;
+            logger.info('Asset group folder deleted', { assetGroupId, filesDeleted: files.length });
           } catch (error) {
-            logger.error('Failed to delete B2 file', { key, error });
+            logger.error('Failed to delete asset group folder', { assetGroupId, error });
             failed++;
           }
         }
 
-        logger.info('B2 cleanup complete', { deleted, failed });
+        logger.info('B2 cleanup complete', {
+          assetGroupsDeleted: deleted,
+          assetGroupsFailed: failed,
+          totalFilesDeleted
+        });
 
         res.json({
-          deleted,
+          deleted: totalFilesDeleted,
           failed,
-          total: fileKeys.length
+          assetGroupsDeleted: deleted,
+          assetGroupsFailed: failed
         });
       } catch (error) {
         logger.error('B2 cleanup failed', error as Error);

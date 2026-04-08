@@ -169,18 +169,57 @@ export class StorageService {
 
   async listAssetGroupFiles(assetGroupId: string, itemId?: string): Promise<string[]> {
     try {
-      const prefix = itemId
-        ? `assets/${itemId}/${assetGroupId}/`
-        : `assets/${assetGroupId}/`;
+      // If itemId is provided, use specific path
+      if (itemId) {
+        const prefix = `assets/${itemId}/${assetGroupId}/`;
+        const result = await this.s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: config.b2.bucket,
+            Prefix: prefix,
+          })
+        );
+        return result.Contents?.map(obj => obj.Key || '') || [];
+      }
 
-      const result = await this.s3Client.send(
-        new ListObjectsV2Command({
-          Bucket: config.b2.bucket,
-          Prefix: prefix,
-        })
-      );
+      // If no itemId, search all possible paths for this asset group
+      // This handles both old format (assets/{assetGroupId}/) and new format (assets/*/{assetGroupId}/)
+      const allFiles: string[] = [];
 
-      return result.Contents?.map(obj => obj.Key || '') || [];
+      // List all files under assets/ prefix
+      let continuationToken: string | undefined;
+      do {
+        const result = await this.s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: config.b2.bucket,
+            Prefix: 'assets/',
+            ContinuationToken: continuationToken,
+            MaxKeys: 1000,
+          })
+        );
+
+        if (result.Contents) {
+          for (const obj of result.Contents) {
+            if (!obj.Key) continue;
+
+            // Check if this file belongs to the asset group
+            const parts = obj.Key.split('/');
+
+            // New format: assets/{itemId}/{assetGroupId}/file
+            if (parts.length >= 4 && parts[2] === assetGroupId) {
+              allFiles.push(obj.Key);
+            }
+            // Old format: assets/{assetGroupId}/file
+            else if (parts.length >= 3 && parts[1] === assetGroupId) {
+              allFiles.push(obj.Key);
+            }
+          }
+        }
+
+        continuationToken = result.NextContinuationToken;
+      } while (continuationToken);
+
+      logger.debug('Found files for asset group', { assetGroupId, fileCount: allFiles.length });
+      return allFiles;
     } catch (error) {
       logger.error('Failed to list asset group files', { assetGroupId, error: error as Error });
       throw error;
@@ -189,8 +228,7 @@ export class StorageService {
 
   async listAllAssetGroups(): Promise<{ assetGroupId: string; key: string; size: number; lastModified: string }[]> {
     logger.info('Listing all asset groups from B2');
-    const assetGroups: { assetGroupId: string; key: string; size: number; lastModified: string }[] = [];
-    const seenAssetGroups = new Set<string>();
+    const allFiles: { assetGroupId: string; key: string; size: number; lastModified: string }[] = [];
 
     try {
       let continuationToken: string | undefined;
@@ -232,9 +270,8 @@ export class StorageService {
               }
             }
 
-            if (assetGroupId && !seenAssetGroups.has(assetGroupId)) {
-              seenAssetGroups.add(assetGroupId);
-              assetGroups.push({
+            if (assetGroupId) {
+              allFiles.push({
                 assetGroupId,
                 key: obj.Key,
                 size: obj.Size || 0,
@@ -247,8 +284,8 @@ export class StorageService {
         continuationToken = result.NextContinuationToken;
       } while (continuationToken);
 
-      logger.info('B2 asset groups listed', { count: assetGroups.length });
-      return assetGroups;
+      logger.info('B2 files listed', { totalFiles: allFiles.length });
+      return allFiles;
     } catch (error) {
       logger.error('Failed to list all asset groups', error as Error);
       throw error;
