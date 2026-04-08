@@ -31,9 +31,10 @@ export class ProfileService {
       })
       .eq('id', userId)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) throw new Error('Profile not found');
     return data;
   }
 

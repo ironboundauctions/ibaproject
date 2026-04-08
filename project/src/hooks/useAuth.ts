@@ -43,8 +43,9 @@ export function useAuthProvider() {
 
     initializeAuth();
 
-    const { data: { subscription } } = AuthService.onAuthStateChange((user) => {
-      setUser(user);
+    const { data: { subscription } } = AuthService.onAuthStateChange((newUser) => {
+      // Simply update user state when auth changes
+      setUser(newUser);
     });
 
     return () => {

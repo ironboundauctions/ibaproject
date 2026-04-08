@@ -9,6 +9,7 @@ export interface UploadedFileInfo {
   fileSize: number;
   mimeType: string;
   assetGroupId: string;
+  sourceKey?: string;
   cdnUrls: {
     source: string;
     display: string;
@@ -207,6 +208,49 @@ export const bulkUploadService = {
   * END OF REVERT POINT 1 */
 
   /**
+   * Upload IronDrive files via worker: worker downloads from RAID, processes, uploads to B2
+   * Returns UploadedFileInfo[] with CDN URLs just like uploadConfirmedFiles does for PC uploads
+   */
+  async uploadIronDriveFiles(
+    sourceKeys: string[],
+    onProgress?: (current: number, total: number) => void
+  ): Promise<UploadedFileInfo[]> {
+    const CHUNK_SIZE = 10;
+    const uploadedFiles: UploadedFileInfo[] = [];
+
+    for (let i = 0; i < sourceKeys.length; i += CHUNK_SIZE) {
+      const chunk = sourceKeys.slice(i, i + CHUNK_SIZE);
+
+      const response = await fetch(`${WORKER_URL}/api/irondrive-bulk-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceKeys: chunk }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'IronDrive upload failed';
+        try {
+          const error = await response.json();
+          errorMessage = error.message || errorMessage;
+        } catch {
+          const errorText = await response.text();
+          errorMessage = errorText || `Upload failed with status ${response.status}`;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      uploadedFiles.push(...(data.uploadedFiles || []));
+
+      if (onProgress) {
+        onProgress(Math.min(i + CHUNK_SIZE, sourceKeys.length), sourceKeys.length);
+      }
+    }
+
+    return uploadedFiles;
+  },
+
+  /**
    * STEP 2: Create batch job in database with analysis results (no uploads yet)
    */
   async createBatchJob(
@@ -316,7 +360,8 @@ export const bulkUploadService = {
         fileName: string;
         assetGroupId: string;
       }>;
-    }>
+    }>,
+    isIronDrive: boolean = false
   ): Promise<{ created: string[]; errors: any[] }> {
     console.log('[BULK-UPLOAD] Starting confirmBatch:', {
       jobId,
@@ -358,30 +403,66 @@ export const bulkUploadService = {
       assetGroupIds: g.files.map(f => f.assetGroupId)
     })));
 
-    // Link files to database via processing worker
-    console.log('[BULK-UPLOAD] Calling bulk-process endpoint...');
-    const response = await fetch(`${WORKER_URL}/api/bulk-process`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ groups: groupsWithMetadata }),
-    });
+    // Link files to database
+    if (isIronDrive) {
+      // For IronDrive files, create auction_files records directly
+      console.log('[BULK-UPLOAD] Creating auction_files records for IronDrive files...');
 
-    if (!response.ok) {
-      let errorMessage = 'Bulk process failed';
-      try {
-        const error = await response.json();
-        errorMessage = error.message || errorMessage;
-      } catch {
-        const errorText = await response.text();
-        errorMessage = errorText || `Process failed with status ${response.status}`;
+      for (const group of groupsWithMetadata) {
+        for (let i = 0; i < group.files.length; i++) {
+          const file = group.files[i];
+          const uploaded = fileMap.get(file.fileName);
+
+          if (!uploaded) {
+            console.error('[BULK-UPLOAD] No uploaded file info for:', file.fileName);
+            continue;
+          }
+
+          const { error: insertError } = await supabase.from('auction_files').insert({
+            item_id: null, // Will be set when inventory item is created
+            asset_group_id: file.assetGroupId,
+            variant: 'source',
+            source_key: uploaded.cdnUrls.source,
+            original_name: file.fileName,
+            mime_type: uploaded.mimeType,
+            published_status: 'pending',
+            display_order: i
+          });
+
+          if (insertError) {
+            console.error('[BULK-UPLOAD] Error inserting auction_file:', insertError);
+            throw new Error(`Failed to create auction_file for ${file.fileName}: ${insertError.message}`);
+          }
+        }
       }
-      throw new Error(errorMessage);
-    }
 
-    const processData = await response.json();
-    console.log('[BULK-UPLOAD] Bulk-process response:', processData);
+      console.log('[BULK-UPLOAD] IronDrive auction_files created successfully');
+    } else {
+      // For PC files, use worker to process files
+      console.log('[BULK-UPLOAD] Calling bulk-process endpoint...');
+      const response = await fetch(`${WORKER_URL}/api/bulk-process`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ groups: groupsWithMetadata }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Bulk process failed';
+        try {
+          const error = await response.json();
+          errorMessage = error.message || errorMessage;
+        } catch {
+          const errorText = await response.text();
+          errorMessage = errorText || `Process failed with status ${response.status}`;
+        }
+        throw new Error(errorMessage);
+      }
+
+      const processData = await response.json();
+      console.log('[BULK-UPLOAD] Bulk-process response:', processData);
+    }
 
     // Now create inventory items for each group
     const createdItems: string[] = [];
@@ -545,10 +626,59 @@ export const bulkUploadService = {
   },
 
   /**
-   * Cancel batch job - no files to cleanup since nothing uploaded yet
+   * Immediately persist uploaded file info to DB so expiry cleanup can find them
+   * Call this right after IronDrive files are uploaded to B2
    */
-  async cancelBatch(jobId: string): Promise<void> {
-    // Update batch job status (no files to delete since we haven't uploaded yet)
+  async persistUploadedFiles(jobId: string, uploadedFiles: UploadedFileInfo[]): Promise<void> {
+    const { error } = await supabase
+      .from('batch_analysis_jobs')
+      .update({ uploaded_files: uploadedFiles })
+      .eq('id', jobId);
+
+    if (error) {
+      console.warn('Failed to persist uploaded files to batch job:', error);
+    }
+  },
+
+  /**
+   * Update batch job analysis results after scanning
+   */
+  async updateBatchAnalysis(jobId: string, files: File[], analysisResults: AnalysisResults): Promise<void> {
+    const { error } = await supabase
+      .from('batch_analysis_jobs')
+      .update({
+        status: 'ready_for_review',
+        total_files: files.length,
+        analysis_results: analysisResults,
+        analyzed_at: new Date().toISOString(),
+      })
+      .eq('id', jobId);
+
+    if (error) {
+      console.warn('Failed to update batch analysis:', error);
+    }
+  },
+
+  /**
+   * Cancel batch job - deletes any B2 files that were already uploaded
+   */
+  async cancelBatch(jobId: string, uploadedFiles?: UploadedFileInfo[]): Promise<void> {
+    // Delete any files already uploaded to B2
+    if (uploadedFiles && uploadedFiles.length > 0) {
+      const assetGroupIds = uploadedFiles.map(f => f.assetGroupId);
+      try {
+        await fetch(`${WORKER_URL}/api/delete-batch-files`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetGroupIds }),
+        });
+      } catch (err) {
+        console.warn('Failed to delete B2 files on cancel (will be cleaned up by expiry):', err);
+      }
+    }
+
+    if (!jobId) return;
+
     const { error } = await supabase
       .from('batch_analysis_jobs')
       .update({

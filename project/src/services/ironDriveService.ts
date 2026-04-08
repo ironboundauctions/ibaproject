@@ -242,4 +242,39 @@ export class IronDriveService {
   static getRaidState(): RaidState {
     return { ...raidState };
   }
+
+  /**
+   * Download a file from RAID storage as a Blob
+   * Used for temporary local processing (e.g., barcode scanning)
+   */
+  static async downloadFileAsBlob(source_key: string): Promise<Blob> {
+    try {
+      console.log('[RAID] Downloading file as blob:', source_key);
+
+      // Use the download_base from health check or fallback
+      const downloadBase = raidState.downloadBase || 'https://raid.ibaproject.bid/pub/download';
+      const downloadUrl = `${downloadBase}/${source_key}`;
+
+      console.log('[RAID] Download URL:', downloadUrl);
+
+      const response = await fetch(downloadUrl, {
+        method: 'GET',
+        headers: {
+          'X-User-Id': SERVICE_USER_ID
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      console.log('[RAID] Downloaded blob:', { type: blob.type, size: blob.size });
+
+      return blob;
+    } catch (error) {
+      console.error('[RAID] Download error:', error);
+      throw error;
+    }
+  }
 }

@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical, ExternalLink } from 'lucide-react';
 import {
   bulkUploadService,
   type UploadedFileInfo,
@@ -46,6 +46,9 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const [newGroupNumber, setNewGroupNumber] = useState<string>('');
   const [showNewGroupInput, setShowNewGroupInput] = useState(false);
   const [selectedUngrouped, setSelectedUngrouped] = useState<Set<string>>(new Set());
+  const [sourceMode, setSourceMode] = useState<'pc' | 'irondrive'>('pc');
+  const [ironDriveFiles, setIronDriveFiles] = useState<Array<{ source_key: string; mime_type: string; filename: string; assetGroupId: string }>>([]);
+  const [processingIronDrive, setProcessingIronDrive] = useState(false);
 
   /* REVERT POINT 2: If reverting to worker-based scanning, restore these states:
    * const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
@@ -58,6 +61,35 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
    */
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadedFilesRef = useRef<UploadedFileInfo[]>([]);
+  const jobIdRef = useRef<string>('');
+  const stageRef = useRef<UploadStage>('select');
+
+  useEffect(() => { uploadedFilesRef.current = uploadedFiles; }, [uploadedFiles]);
+  useEffect(() => { jobIdRef.current = jobId; }, [jobId]);
+  useEffect(() => { stageRef.current = stage; }, [stage]);
+
+  useEffect(() => {
+    const handleUnload = () => {
+      const files = uploadedFilesRef.current;
+      const currentStage = stageRef.current;
+
+      if (files.length === 0 || currentStage === 'complete') return;
+
+      const assetGroupIds = files.map(f => f.assetGroupId);
+      const workerUrl = (import.meta.env.VITE_WORKER_URL || '').replace(/\/$/, '');
+
+      if (workerUrl && assetGroupIds.length > 0) {
+        navigator.sendBeacon(
+          `${workerUrl}/api/delete-batch-files`,
+          new Blob([JSON.stringify({ assetGroupIds })], { type: 'application/json' })
+        );
+      }
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, []);
 
   const resetModal = () => {
     setStage('select');
@@ -75,6 +107,9 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setNewGroupNumber('');
     setShowNewGroupInput(false);
     setSelectedUngrouped(new Set());
+    setSourceMode('pc');
+    setIronDriveFiles([]);
+    setProcessingIronDrive(false);
   };
 
   /* REVERT POINT 2: If reverting to worker-based scanning, add these back to resetModal:
@@ -82,6 +117,21 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
    * setReductionProgress({ current: 0, total: 0, currentFile: '' });
    * setReductionStats(null);
    */
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleMessage = async (event: MessageEvent) => {
+      if (event.origin !== 'https://irondrive.ibaproject.bid') return;
+
+      if (event.data.type === 'irondrive-selection' && event.data.files) {
+        handleIronDriveSelection(event.data.files);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [isOpen]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -96,16 +146,175 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setSelectedFiles(imageFiles);
   };
 
+  const handleIronDrivePickerClick = () => {
+    const returnUrl = encodeURIComponent(window.location.origin);
+    window.open(
+      `https://irondrive.ibaproject.bid/picker?return_to=${returnUrl}`,
+      'irondrivePicker',
+      'width=1200,height=800'
+    );
+  };
+
+  const guessMimeType = (filename: string): string => {
+    const ext = filename.toLowerCase().split('.').pop() || '';
+    const mimeTypes: Record<string, string> = {
+      jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+      gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+      tiff: 'image/tiff', tif: 'image/tiff', heic: 'image/heic',
+      heif: 'image/heif', avif: 'image/avif',
+    };
+    return mimeTypes[ext] || 'image/jpeg';
+  };
+
+  const handleIronDriveSelection = (pickerFiles: any[]) => {
+    console.log('[IRONDRIVE] Received files for bulk upload:', pickerFiles);
+    setError('');
+
+    const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif', 'avif'];
+
+    const imageFiles = pickerFiles.filter(f => {
+      const mimeType = f.mime_type || f.mimeType || '';
+      if (mimeType.startsWith('image/')) return true;
+      const name = f.filename || f.name || f.source_key || '';
+      const ext = name.split('.').pop()?.toLowerCase() || '';
+      return IMAGE_EXTENSIONS.includes(ext);
+    });
+
+    if (imageFiles.length !== pickerFiles.length) {
+      setError(`Some files were skipped - only images are allowed. Selected ${imageFiles.length} of ${pickerFiles.length} files.`);
+    }
+
+    if (imageFiles.length === 0) return;
+
+    const staged = imageFiles.map(f => {
+      const fileName = f.filename || f.name || f.source_key?.split('/').pop() || 'unknown';
+      const mimeType = f.mime_type || f.mimeType || guessMimeType(fileName);
+      return {
+        source_key: f.source_key,
+        mime_type: mimeType,
+        filename: fileName,
+        assetGroupId: crypto.randomUUID(),
+      };
+    });
+
+    console.log('[IRONDRIVE] Staged', staged.length, 'files (metadata only, no download)');
+    setIronDriveFiles(staged);
+  };
+
   const handleAnalyze = async () => {
-    if (selectedFiles.length === 0) return;
+    const hasFiles = sourceMode === 'irondrive' ? ironDriveFiles.length > 0 : selectedFiles.length > 0;
+    if (!hasFiles) return;
 
     setError('');
 
     try {
+      let analysis: AnalysisResults;
+
+      if (sourceMode === 'irondrive') {
+        // Step 1: Upload IronDrive files via worker (RAID → B2)
+        setStage('uploading');
+        const sourceKeys = ironDriveFiles.map(f => f.source_key);
+        const uploaded = await bulkUploadService.uploadIronDriveFiles(
+          sourceKeys,
+          (current, total) => setUploadProgress({ current, total })
+        );
+        setUploadedFiles(uploaded);
+
+        // Persist uploaded assetGroupIds to DB immediately so expiry cleanup
+        // can find and delete these B2 files if the user closes the window
+        const batchJobId = await bulkUploadService.createBatchJob(
+          ironDriveFiles.map(f => new File([], f.filename, { type: f.mime_type })),
+          { grouped: [], ungrouped: [], errors: [] }
+        );
+        setJobId(batchJobId);
+        await bulkUploadService.persistUploadedFiles(batchJobId, uploaded);
+
+        // Build a map from sourceKey → UploadedFileInfo so we preserve assetGroupIds
+        // Worker assigns its own assetGroupIds, so update ironDriveFiles to match
+        const sourceKeyToUploaded = new Map(uploaded.map(u => [u.sourceKey, u]));
+        const updatedIronDriveFiles = ironDriveFiles.map(f => {
+          const up = sourceKeyToUploaded.get(f.source_key);
+          return up ? { ...f, assetGroupId: up.assetGroupId } : f;
+        });
+        setIronDriveFiles(updatedIronDriveFiles);
+
+        // Step 2: Fetch CDN thumb images as File objects for barcode scanning
+        setStage('analyzing');
+        const thumbFiles: File[] = [];
+        for (const up of uploaded) {
+          try {
+            const resp = await fetch(up.cdnUrls.thumb);
+            const blob = await resp.blob();
+            thumbFiles.push(new File([blob], up.fileName, { type: 'image/webp' }));
+          } catch {
+            thumbFiles.push(new File([], up.fileName, { type: 'image/webp' }));
+          }
+        }
+
+        // Step 3: Scan barcodes on CDN thumbs (same as PC flow)
+        analysis = await bulkUploadService.analyzeBatch(thumbFiles, (current, total) => {
+          setAnalysisProgress({ current, total });
+        });
+
+        // Remap assetGroupIds from thumbFiles back to uploaded file assetGroupIds
+        const fileNameToAssetGroupId = new Map(uploaded.map(u => [u.fileName, u.assetGroupId]));
+        analysis.grouped = analysis.grouped.map(g => ({
+          ...g,
+          files: g.files.map(f => ({
+            ...f,
+            assetGroupId: fileNameToAssetGroupId.get(f.fileName) || f.assetGroupId,
+          })),
+        }));
+        analysis.ungrouped = analysis.ungrouped.map(f => ({
+          ...f,
+          assetGroupId: fileNameToAssetGroupId.get(f.fileName) || f.assetGroupId,
+        }));
+
+        setAnalysisResults(analysis);
+        setGroups(analysis.grouped);
+        setUngrouped(analysis.ungrouped);
+
+        // Update the existing batch job with final analysis results
+        await bulkUploadService.updateBatchAnalysis(batchJobId, thumbFiles, analysis);
+
+        if (analysis.grouped.length > 0) {
+          const inventoryNumbers = analysis.grouped.map(g => g.inv_number);
+          const { data: existingItems } = await supabase
+            .from('inventory_items')
+            .select('inventory_number, deleted_at')
+            .in('inventory_number', inventoryNumbers);
+
+          if (existingItems && existingItems.length > 0) {
+            const conflicts = existingItems.map(item => ({
+              inv_number: item.inventory_number,
+              error: item.deleted_at
+                ? 'Item exists in Recently Removed - restore or permanently delete it first'
+                : 'Inventory number already exists',
+              isInRecentlyRemoved: !!item.deleted_at,
+            }));
+            setValidationErrors(conflicts);
+            const recentlyRemovedCount = conflicts.filter(c => c.isInRecentlyRemoved).length;
+            const activeCount = conflicts.length - recentlyRemovedCount;
+            let errorMsg = '';
+            if (recentlyRemovedCount > 0 && activeCount > 0) {
+              errorMsg = `${recentlyRemovedCount} item(s) exist in Recently Removed and ${activeCount} item(s) already exist as active inventory.`;
+            } else if (recentlyRemovedCount > 0) {
+              errorMsg = `${recentlyRemovedCount} item(s) exist in Recently Removed section. Please restore or permanently delete them first.`;
+            } else {
+              errorMsg = `${activeCount} inventory number(s) already exist.`;
+            }
+            setError(errorMsg);
+          }
+        }
+
+        setStage('confirm');
+        return;
+      }
+
       // BROWSER-SIDE SCANNING: Scan barcodes directly in browser
       setStage('analyzing');
 
-      const analysis = await bulkUploadService.analyzeBatch(selectedFiles, (current, total) => {
+      analysis = await bulkUploadService.analyzeBatch(selectedFiles, (current, total) => {
         setAnalysisProgress({ current, total });
       });
 
@@ -313,84 +522,125 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setError('');
 
     try {
-      // STEP 2: Get confirmed files to upload (only files in groups)
-      const confirmedFileNames = new Set<string>();
-      groups.forEach(group => {
-        group.files.forEach(file => {
-          confirmedFileNames.add(file.fileName);
-        });
-      });
+      let uploaded: UploadedFileInfo[];
 
-      // Map file names to actual File objects from selectedFiles
-      const fileNameToFile = new Map(selectedFiles.map(f => [f.name, f]));
-      const filesToUpload = Array.from(confirmedFileNames)
-        .map(name => fileNameToFile.get(name))
-        .filter((f): f is File => f !== undefined);
+      if (sourceMode === 'irondrive') {
+        // Files were already uploaded to B2 during the analyze phase
+        // uploadedFiles state already has the correct CDN URLs and assetGroupIds
+        uploaded = uploadedFiles;
 
-      /* REVERT POINT 2: If reverting to worker-based scanning, restore fileMap usage:
-       * const filesToUpload = Array.from(confirmedFileNames)
-       *   .map(name => fileMap.get(name))
-       *   .filter((f): f is File => f !== undefined);
-       */
+        // Update groups to use the real assetGroupIds from the uploaded files
+        const fileNameToAssetGroupId = new Map(uploaded.map(f => [f.fileName, f.assetGroupId]));
+        const groupsWithRealIds = groups.map(group => ({
+          ...group,
+          files: group.files.map(file => ({
+            ...file,
+            assetGroupId: fileNameToAssetGroupId.get(file.fileName) || file.assetGroupId,
+          })),
+        }));
 
-      // STEP 3: Upload confirmed files to B2
-      const uploaded = await bulkUploadService.uploadConfirmedFiles(
-        filesToUpload,
-        (current, total) => setUploadProgress({ current, total })
-      );
-      setUploadedFiles(uploaded);
+        setStage('processing');
 
-      // Map uploaded files by fileName to get real asset group IDs
-      const fileNameToAssetGroupId = new Map(
-        uploaded.map(f => [f.fileName, f.assetGroupId])
-      );
+        // Confirm batch - files are already in B2, just create inventory items and link
+        const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds, false);
 
-      // Update groups to use real asset group IDs (not temp IDs)
-      const groupsWithRealIds = groups.map(group => ({
-        ...group,
-        files: group.files.map(file => ({
-          ...file,
-          assetGroupId: fileNameToAssetGroupId.get(file.fileName) || file.assetGroupId,
-        })),
-      }));
-
-      setStage('processing');
-
-      // STEP 4: Confirm batch and create inventory items
-      const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds);
-
-      if (result.errors.length > 0) {
-        console.error('[BULK-UPLOAD] Some items failed to create:', result.errors);
-        result.errors.forEach(err => {
-          console.error('[BULK-UPLOAD] Error for', err.inv_number, ':', err.error);
-        });
-
-        // Store detailed errors for user action
-        setValidationErrors(result.errors);
-
-        // Check if any errors are due to Recently Removed items
-        const recentlyRemovedCount = result.errors.filter(e => e.isInRecentlyRemoved).length;
-        if (recentlyRemovedCount > 0) {
-          setError(`${result.created.length} item(s) created. ${recentlyRemovedCount} item(s) exist in Recently Removed section. Please restore or permanently delete them first.`);
-        } else {
-          const errorSummary = result.errors.map(e => `${e.inv_number}: ${e.error}`).join('\n');
-          setError(`${result.created.length} item(s) created successfully, but ${result.errors.length} failed:\n${errorSummary}`);
+        if (result.errors.length > 0) {
+          console.error('[BULK-UPLOAD] Some items failed to create:', result.errors);
+          setValidationErrors(result.errors);
+          setError(`${result.created.length} item(s) created successfully, but ${result.errors.length} failed`);
+          setStage('confirm');
+          return;
         }
-        setStage('confirm');
+
+        console.log('[BULK-UPLOAD] IronDrive batch complete:', result.created.length);
+        setStage('complete');
+        setTimeout(() => {
+          onSuccess();
+          onClose();
+          resetModal();
+        }, 2000);
         return;
+      } else {
+        // PC Upload flow
+        // STEP 2: Get confirmed files to upload (only files in groups)
+        const confirmedFileNames = new Set<string>();
+        groups.forEach(group => {
+          group.files.forEach(file => {
+            confirmedFileNames.add(file.fileName);
+          });
+        });
+
+        // Map file names to actual File objects from selectedFiles
+        const fileNameToFile = new Map(selectedFiles.map(f => [f.name, f]));
+        const filesToUpload = Array.from(confirmedFileNames)
+          .map(name => fileNameToFile.get(name))
+          .filter((f): f is File => f !== undefined);
+
+        /* REVERT POINT 2: If reverting to worker-based scanning, restore fileMap usage:
+         * const filesToUpload = Array.from(confirmedFileNames)
+         *   .map(name => fileMap.get(name))
+         *   .filter((f): f is File => f !== undefined);
+         */
+
+        // STEP 3: Upload confirmed files to B2
+        uploaded = await bulkUploadService.uploadConfirmedFiles(
+          filesToUpload,
+          (current, total) => setUploadProgress({ current, total })
+        );
+        setUploadedFiles(uploaded);
+
+        // Map uploaded files by fileName to get real asset group IDs
+        const fileNameToAssetGroupId = new Map(
+          uploaded.map(f => [f.fileName, f.assetGroupId])
+        );
+
+        // Update groups to use real asset group IDs (not temp IDs)
+        const groupsWithRealIds = groups.map(group => ({
+          ...group,
+          files: group.files.map(file => ({
+            ...file,
+            assetGroupId: fileNameToAssetGroupId.get(file.fileName) || file.assetGroupId,
+          })),
+        }));
+
+        setStage('processing');
+
+        // STEP 4: Confirm batch and create inventory items (PC flow)
+        const result = await bulkUploadService.confirmBatch(jobId, uploaded, groupsWithRealIds, false);
+
+        if (result.errors.length > 0) {
+          console.error('[BULK-UPLOAD] Some items failed to create:', result.errors);
+          result.errors.forEach(err => {
+            console.error('[BULK-UPLOAD] Error for', err.inv_number, ':', err.error);
+          });
+
+          // Store detailed errors for user action
+          setValidationErrors(result.errors);
+
+          // Check if any errors are due to Recently Removed items
+          const recentlyRemovedCount = result.errors.filter(e => e.isInRecentlyRemoved).length;
+          if (recentlyRemovedCount > 0) {
+            setError(`${result.created.length} item(s) created. ${recentlyRemovedCount} item(s) exist in Recently Removed section. Please restore or permanently delete them first.`);
+          } else {
+            const errorSummary = result.errors.map(e => `${e.inv_number}: ${e.error}`).join('\n');
+            setError(`${result.created.length} item(s) created successfully, but ${result.errors.length} failed:\n${errorSummary}`);
+          }
+          setStage('confirm');
+          return;
+        }
+
+        console.log('[BULK-UPLOAD] Batch complete:', {
+          created: result.created.length,
+          errors: result.errors.length
+        });
+
+        setStage('complete');
+        setTimeout(() => {
+          onSuccess();
+          onClose();
+          resetModal();
+        }, 2000);
       }
-
-      console.log('[BULK-UPLOAD] Batch complete:', {
-        created: result.created.length,
-        errors: result.errors.length
-      });
-
-      setStage('complete');
-      setTimeout(() => {
-        onSuccess();
-        onClose();
-        resetModal();
-      }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Processing failed');
       setStage('confirm');
@@ -398,9 +648,8 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   };
 
   const handleCancel = async () => {
-    // No files uploaded yet, just cancel the batch job
-    if (jobId) {
-      await bulkUploadService.cancelBatch(jobId);
+    if (jobId || uploadedFiles.length > 0) {
+      await bulkUploadService.cancelBatch(jobId, uploadedFiles);
     }
     onClose();
     resetModal();
@@ -491,28 +740,76 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
           {stage === 'select' && (
             <div className="space-y-6">
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 hover:bg-blue-50 transition-colors cursor-pointer"
-              >
-                <Upload className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-lg font-medium text-gray-700 mb-2">
-                  Click to select images
-                </p>
-                <p className="text-sm text-gray-500">
-                  Upload images with barcodes for automatic grouping by inventory number
-                </p>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
+              {/* Source Selection Toggle */}
+              <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
+                <span className="text-sm font-medium text-gray-700">Select Source:</span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSourceMode('pc')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      sourceMode === 'pc'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Upload className="w-4 h-4 inline-block mr-2" />
+                    PC Upload
+                  </button>
+                  <button
+                    onClick={() => setSourceMode('irondrive')}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      sourceMode === 'irondrive'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-100'
+                    }`}
+                  >
+                    <ExternalLink className="w-4 h-4 inline-block mr-2" />
+                    IronDrive
+                  </button>
+                </div>
               </div>
 
-              {selectedFiles.length > 0 && (
+              {/* PC Upload Area */}
+              {sourceMode === 'pc' && (
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 hover:bg-blue-50 transition-colors cursor-pointer"
+                >
+                  <Upload className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-lg font-medium text-gray-700 mb-2">
+                    Click to select images from your computer
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    Upload images with barcodes for automatic grouping by inventory number
+                  </p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                </div>
+              )}
+
+              {/* IronDrive Picker Area */}
+              {sourceMode === 'irondrive' && (
+                <div
+                  onClick={handleIronDrivePickerClick}
+                  className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 hover:bg-blue-50 transition-colors cursor-pointer"
+                >
+                  <ExternalLink className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <p className="text-lg font-medium text-gray-700 mb-2">
+                    Click to select images from IronDrive
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    Select files already uploaded to IronDrive for automatic grouping
+                  </p>
+                </div>
+              )}
+
+              {sourceMode === 'pc' && selectedFiles.length > 0 && (
                 <div className="space-y-4">
                   <h3 className="font-medium text-gray-900">
                     Selected Files ({selectedFiles.length})
@@ -538,6 +835,30 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                     className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 transition-colors"
                   >
                     Analyze {selectedFiles.length} Images
+                  </button>
+                </div>
+              )}
+
+              {sourceMode === 'irondrive' && ironDriveFiles.length > 0 && (
+                <div className="space-y-4">
+                  <h3 className="font-medium text-gray-900">
+                    Selected Files ({ironDriveFiles.length})
+                    <span className="ml-2 text-sm text-blue-600">(from IronDrive)</span>
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {ironDriveFiles.map((file) => (
+                      <div key={file.assetGroupId} className="relative group bg-gray-100 rounded-lg h-32 flex items-center justify-center">
+                        <p className="text-xs text-gray-600 text-center px-2 break-all">
+                          {file.filename}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleAnalyze}
+                    className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                  >
+                    Continue with {ironDriveFiles.length} IronDrive Images
                   </button>
                 </div>
               )}
@@ -592,9 +913,11 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
           {stage === 'uploading' && (
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-12 h-12 text-blue-600 animate-spin mb-4" />
-              <p className="text-lg font-medium text-gray-900 mb-2">Uploading confirmed files...</p>
+              <p className="text-lg font-medium text-gray-900 mb-2">
+                {sourceMode === 'irondrive' ? 'Downloading from IronDrive and uploading to storage...' : 'Uploading confirmed files...'}
+              </p>
               <p className="text-sm text-gray-500">
-                {uploadProgress.current} of {uploadProgress.total} files uploaded
+                {uploadProgress.current} of {uploadProgress.total > 0 ? uploadProgress.total : ironDriveFiles.length} files processed
               </p>
             </div>
           )}
@@ -612,7 +935,9 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
               <div className="grid grid-cols-3 gap-4">
                 <div className="bg-gray-50 p-4 rounded-lg">
                   <p className="text-sm text-gray-600">Total Files</p>
-                  <p className="text-2xl font-bold text-gray-900">{selectedFiles.length}</p>
+                  <p className="text-2xl font-bold text-gray-900">
+                    {sourceMode === 'irondrive' ? ironDriveFiles.length : selectedFiles.length}
+                  </p>
                 </div>
                 <div className="bg-green-50 p-4 rounded-lg">
                   <p className="text-sm text-green-600">Grouped</p>
@@ -718,7 +1043,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                         value={newGroupNumber}
                         onChange={(e) => setNewGroupNumber(e.target.value)}
                         placeholder="Enter inventory number"
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg"
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-gray-900 bg-white placeholder-gray-400"
                       />
                       <button
                         onClick={handleCreateGroupFromSelected}

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { ImageProcessor } from './imageProcessor.js';
 import { StorageService } from './storage.js';
 import { DatabaseService } from './database.js';
+import { RaidService } from './raid.js';
 import { logger } from '../logger.js';
 import crypto from 'crypto';
 
@@ -9,7 +10,8 @@ export class UploadHandler {
   constructor(
     private db: DatabaseService,
     private imageProcessor: ImageProcessor,
-    private storage: StorageService
+    private storage: StorageService,
+    private raid: RaidService
   ) {}
 
   async handlePCUpload(req: Request, res: Response): Promise<void> {
@@ -370,6 +372,99 @@ export class UploadHandler {
       logger.error('Bulk process failed', error as Error);
       res.status(500).json({
         error: 'Bulk process failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async handleIronDriveBulkUpload(req: Request, res: Response): Promise<void> {
+    try {
+      const { sourceKeys } = req.body;
+
+      if (!sourceKeys || !Array.isArray(sourceKeys) || sourceKeys.length === 0) {
+        res.status(400).json({ error: 'sourceKeys array is required' });
+        return;
+      }
+
+      logger.info('Processing IronDrive bulk upload', { count: sourceKeys.length });
+
+      const BATCH_SIZE = 5;
+      const allResults: any[] = [];
+      const allErrors: any[] = [];
+
+      for (let i = 0; i < sourceKeys.length; i += BATCH_SIZE) {
+        const batch = sourceKeys.slice(i, i + BATCH_SIZE);
+
+        const results = await Promise.allSettled(
+          batch.map(async (sourceKey: string) => {
+            const assetGroupId = crypto.randomUUID();
+            const fileName = sourceKey.split('/').pop() || sourceKey;
+
+            try {
+              const buffer = await this.raid.downloadFile(sourceKey);
+              const variants = await this.imageProcessor.processImage(buffer);
+
+              const sourceB2Key = `assets/${assetGroupId}/source.webp`;
+              const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
+              await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
+
+              const displayB2Key = `assets/${assetGroupId}/display.webp`;
+              const displayCdnUrl = this.storage.getCdnUrl(displayB2Key);
+              await this.storage.uploadFile(displayB2Key, variants.display.buffer, 'image/webp');
+
+              const thumbB2Key = `assets/${assetGroupId}/thumb.webp`;
+              const thumbCdnUrl = this.storage.getCdnUrl(thumbB2Key);
+              await this.storage.uploadFile(thumbB2Key, variants.thumb.buffer, 'image/webp');
+
+              return {
+                fileName,
+                sourceKey,
+                fileSize: buffer.length,
+                mimeType: 'image/webp',
+                assetGroupId,
+                cdnUrls: {
+                  source: sourceCdnUrl,
+                  display: displayCdnUrl,
+                  thumb: thumbCdnUrl,
+                },
+                width: variants.display.width,
+                height: variants.display.height,
+              };
+            } catch (error) {
+              logger.error('Failed to process IronDrive file', { sourceKey, assetGroupId, error });
+              try {
+                await this.storage.deleteAssetGroup(assetGroupId);
+              } catch {}
+              throw error;
+            }
+          })
+        );
+
+        results
+          .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+          .forEach(r => allResults.push(r.value));
+
+        results
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .forEach(r => allErrors.push({ error: r.reason instanceof Error ? r.reason.message : String(r.reason) }));
+      }
+
+      logger.info('IronDrive bulk upload completed', {
+        total: sourceKeys.length,
+        successful: allResults.length,
+        failed: allErrors.length,
+      });
+
+      res.json({
+        success: true,
+        uploadedFiles: allResults,
+        errors: allErrors.length > 0 ? allErrors : undefined,
+      });
+
+    } catch (error) {
+      logger.error('IronDrive bulk upload failed', error as Error);
+      res.status(500).json({
+        error: 'IronDrive bulk upload failed',
         message: error instanceof Error ? error.message : 'Unknown error',
       });
     }

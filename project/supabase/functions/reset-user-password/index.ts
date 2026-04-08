@@ -120,7 +120,7 @@ Deno.serve(async (req: Request) => {
     // Generate temporary password
     const temporaryPassword = generateTemporaryPassword();
 
-    // Update user password
+    // Update user password and sign out all sessions
     const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
       userId,
       { password: temporaryPassword }
@@ -135,6 +135,14 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         }
       );
+    }
+
+    // Sign out all sessions for this user
+    const { error: signOutError } = await supabaseAdmin.auth.admin.signOut(userId, 'global');
+
+    if (signOutError) {
+      console.error('Sign out error:', signOutError);
+      // Continue even if sign out fails - password is already reset
     }
 
     // If sendEmail is true, you would integrate with an email service here

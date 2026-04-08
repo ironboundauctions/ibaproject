@@ -30,7 +30,7 @@ class MediaPublishingWorker {
 
     this.jobProcessor = new JobProcessor(this.db, raid, imageProcessor, this.storage);
     this.cleanupProcessor = new CleanupProcessor(this.db, this.storage);
-    this.uploadHandler = new UploadHandler(this.db, imageProcessor, this.storage);
+    this.uploadHandler = new UploadHandler(this.db, imageProcessor, this.storage, raid);
   }
 
   async start(): Promise<void> {
@@ -108,6 +108,10 @@ class MediaPublishingWorker {
 
     app.post('/api/bulk-process', async (req: Request, res: Response) => {
       await this.uploadHandler.handleBulkProcess(req, res);
+    });
+
+    app.post('/api/irondrive-bulk-upload', async (req: Request, res: Response) => {
+      await this.uploadHandler.handleIronDriveBulkUpload(req, res);
     });
 
     app.post('/api/delete-batch-files', async (req: Request, res: Response) => {
