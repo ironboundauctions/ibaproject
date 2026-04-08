@@ -429,6 +429,17 @@ export class DatabaseService {
     return result.rows.map(row => row.asset_group_id);
   }
 
+  async getAllFileKeys(): Promise<string[]> {
+    const result = await this.pool.query<{ b2_key: string }>(
+      `SELECT DISTINCT b2_key
+       FROM auction_files
+       WHERE b2_key IS NOT NULL
+       ORDER BY b2_key`
+    );
+
+    return result.rows.map(row => row.b2_key);
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

@@ -291,4 +291,43 @@ export class StorageService {
       throw error;
     }
   }
+
+  async listAllFiles(): Promise<{ key: string; size: number; lastModified: string }[]> {
+    logger.info('Listing ALL files from entire B2 bucket');
+    const allFiles: { key: string; size: number; lastModified: string }[] = [];
+
+    try {
+      let continuationToken: string | undefined;
+
+      do {
+        const result = await this.s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: config.b2.bucket,
+            ContinuationToken: continuationToken,
+            MaxKeys: 1000,
+          })
+        );
+
+        if (result.Contents) {
+          for (const obj of result.Contents) {
+            if (!obj.Key) continue;
+
+            allFiles.push({
+              key: obj.Key,
+              size: obj.Size || 0,
+              lastModified: obj.LastModified?.toISOString() || new Date().toISOString(),
+            });
+          }
+        }
+
+        continuationToken = result.NextContinuationToken;
+      } while (continuationToken);
+
+      logger.info('All B2 files listed', { totalFiles: allFiles.length });
+      return allFiles;
+    } catch (error) {
+      logger.error('Failed to list all files', error as Error);
+      throw error;
+    }
+  }
 }
