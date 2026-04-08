@@ -1,6 +1,5 @@
 import sharp from 'sharp';
 import jsQR from 'jsqr';
-import { createCanvas, loadImage } from 'canvas';
 import Quagga from '@ericblade/quagga2';
 import { logger } from '../logger.js';
 
@@ -31,15 +30,15 @@ export class BarcodeScanner {
       for (const strategy of strategies) {
         try {
           const processedBuffer = await strategy.process(buffer);
-          const pngBuffer = await sharp(processedBuffer).png().toBuffer();
-          const img = await loadImage(pngBuffer);
 
-          const canvas = createCanvas(img.width, img.height);
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          const { data, info } = await sharp(processedBuffer)
+            .ensureAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
 
-          const qrResult = jsQR(imageData.data, imageData.width, imageData.height, {
+          const imageData = new Uint8ClampedArray(data);
+
+          const qrResult = jsQR(imageData, info.width, info.height, {
             inversionAttempts: 'dontInvert',
           });
 
@@ -49,10 +48,14 @@ export class BarcodeScanner {
           }
 
           try {
+            const pngBuffer = await sharp(processedBuffer).png().toBuffer();
+            const base64 = pngBuffer.toString('base64');
+            const dataUrl = `data:image/png;base64,${base64}`;
+
             const result = await new Promise<any>((resolve, reject) => {
               Quagga.decodeSingle(
                 {
-                  src: canvas.toDataURL(),
+                  src: dataUrl,
                   numOfWorkers: 0,
                   locate: true,
                   decoder: {
