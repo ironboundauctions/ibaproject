@@ -204,8 +204,15 @@ class MediaPublishingWorker {
         // Create a set of database keys for fast lookup
         const dbKeySet = new Set(dbFileKeys);
 
-        // Find orphaned files - ANY file in B2 that doesn't have a matching b2_key in database
-        const orphanedFiles = allB2Files.filter(file => !dbKeySet.has(file.key));
+        // Only flag files older than 24h as orphaned - mid-upload files may not be in DB yet
+        const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+        // Find orphaned files - files in B2 with no matching b2_key in DB AND old enough
+        const orphanedFiles = allB2Files.filter(file => {
+          if (dbKeySet.has(file.key)) return false;
+          const fileAge = new Date(file.lastModified);
+          return fileAge < staleThreshold;
+        });
         const estimatedWastedSpace = orphanedFiles.reduce((sum, file) => sum + file.size, 0);
 
         // Also get asset group statistics for reporting

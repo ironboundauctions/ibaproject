@@ -22,6 +22,8 @@ interface OrphanedRecord {
   issue: string;
 }
 
+const STALE_THRESHOLD_HOURS = 24;
+
 export function OrphanedRecordsCleanup() {
   const [scanning, setScanning] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -41,21 +43,41 @@ export function OrphanedRecordsCleanup() {
 
       if (error) throw error;
 
+      // Load all active inventory item IDs for fast lookup
+      const { data: activeItems, error: itemsError } = await supabase
+        .from('inventory_items')
+        .select('id')
+        .is('deleted_at', null);
+
+      if (itemsError) throw itemsError;
+
+      const activeItemIds = new Set((activeItems || []).map(i => i.id));
+
+      const staleThreshold = new Date(Date.now() - STALE_THRESHOLD_HOURS * 60 * 60 * 1000);
       const orphaned: OrphanedRecord[] = [];
 
       for (const record of data || []) {
+        const createdAt = new Date(record.created_at);
+        const isOld = createdAt < staleThreshold;
         let issue = '';
 
         if (!record.cdn_url && !record.b2_key) {
-          issue = 'No CDN URL or B2 key';
-        } else if (!record.cdn_url) {
-          issue = 'Missing CDN URL';
-        } else if (!record.b2_key) {
-          issue = 'Missing B2 key';
-        } else if (!record.bytes || record.bytes === 0) {
-          issue = 'Zero or null bytes';
-        } else if (!record.item_id) {
-          issue = 'No item_id (orphaned from inventory)';
+          // Only flag if record is old enough that it can't be mid-upload
+          if (isOld) {
+            issue = 'No CDN URL or B2 key (stale record)';
+          }
+        } else if (record.item_id === null) {
+          // item_id = NULL is used legitimately during bulk/IronDrive upload workflows
+          // Only flag as orphaned if the record is old (upload workflow long since finished)
+          if (isOld) {
+            issue = 'No item_id after 24h (never assigned to inventory)';
+          }
+        } else if (!activeItemIds.has(record.item_id)) {
+          // item_id is set but points to a non-existent or soft-deleted item
+          // Note: if ON DELETE CASCADE is active this shouldn't happen, but guard anyway
+          if (isOld) {
+            issue = 'item_id references deleted or missing inventory item';
+          }
         }
 
         if (issue) {
@@ -85,9 +107,9 @@ export function OrphanedRecordsCleanup() {
 
   const cleanupOrphaned = async () => {
     if (!confirm(
-      `⚠️ PERMANENT DELETION\n\n` +
+      `PERMANENT DELETION\n\n` +
       `This will permanently delete ${orphanedRecords.length} orphaned database record${orphanedRecords.length !== 1 ? 's' : ''}.\n\n` +
-      `This removes database entries for files with missing or invalid data.\n` +
+      `Only records older than ${STALE_THRESHOLD_HOURS} hours with no valid inventory item are included.\n` +
       `If B2 files exist for these records, they will NOT be deleted (use B2 Bucket Cleanup for that).\n\n` +
       `This action CANNOT be undone.\n\n` +
       `Continue?`
@@ -154,18 +176,23 @@ export function OrphanedRecordsCleanup() {
 
       <div className="mb-6">
         <p className="text-sm text-gray-600 mb-4">
-          Scans for database records with missing or invalid data including:
+          Scans for database records that are genuinely orphaned. Records must be older than {STALE_THRESHOLD_HOURS} hours to be flagged — this prevents false positives from in-progress uploads.
         </p>
         <ul className="text-sm text-gray-600 mb-4 ml-6 list-disc space-y-1">
-          <li>Records with NULL item_id (orphaned from inventory)</li>
-          <li>Records with missing CDN URL or B2 key</li>
-          <li>Records with zero or NULL bytes</li>
-          <li>Records with incomplete metadata</li>
+          <li>Records with no CDN URL or B2 key (stale, older than {STALE_THRESHOLD_HOURS}h)</li>
+          <li>Records with NULL item_id that are older than {STALE_THRESHOLD_HOURS}h (never assigned)</li>
+          <li>Records whose item_id points to a deleted or missing inventory item</li>
         </ul>
 
         <div className="bg-amber-50 border border-amber-200 rounded-md p-3 mb-4">
           <p className="text-sm text-amber-900">
-            <strong>Note:</strong> This only removes database entries. If B2 files exist, use "B2 Bucket Cleanup" to delete them.
+            <strong>Note:</strong> This only removes database entries. If B2 files exist, use "B2 Bucket Cleanup" to delete them from storage.
+          </p>
+        </div>
+
+        <div className="bg-blue-50 border border-blue-200 rounded-md p-3 mb-4">
+          <p className="text-sm text-blue-900">
+            <strong>Safe by design:</strong> Records with NULL item_id that are recent (less than {STALE_THRESHOLD_HOURS}h old) are intentionally skipped — the IronDrive bulk upload workflow creates file records before inventory items exist, so these are legitimate work-in-progress records.
           </p>
         </div>
 
@@ -218,6 +245,9 @@ export function OrphanedRecordsCleanup() {
                     Item ID
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Size
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Created
                   </th>
                 </tr>
@@ -254,6 +284,9 @@ export function OrphanedRecordsCleanup() {
                       ) : (
                         <span className="text-sm text-red-600 font-semibold">NULL</span>
                       )}
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {formatFileSize(record.bytes)}
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
                       {new Date(record.created_at).toLocaleDateString()}
