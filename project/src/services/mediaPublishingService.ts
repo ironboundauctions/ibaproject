@@ -89,6 +89,27 @@ class MediaPublishingService {
   }
 
   async detachMedia(asset_group_id: string): Promise<void> {
+    const { data: files } = await supabase
+      .from('auction_files')
+      .select('item_id')
+      .eq('asset_group_id', asset_group_id)
+      .is('detached_at', null)
+      .limit(1);
+
+    const itemId = files?.[0]?.item_id;
+
+    if (itemId) {
+      const { data: item } = await supabase
+        .from('inventory_items')
+        .select('id, deleted_at')
+        .eq('id', itemId)
+        .maybeSingle();
+
+      if (item && !item.deleted_at) {
+        throw new Error('Cannot detach media: inventory item is still active. Only files belonging to deleted items can be detached.');
+      }
+    }
+
     const { error } = await supabase
       .from('auction_files')
       .update({ detached_at: new Date().toISOString() })

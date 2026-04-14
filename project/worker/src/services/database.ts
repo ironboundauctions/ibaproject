@@ -329,6 +329,16 @@ export class DatabaseService {
     return count > 0;
   }
 
+  async isItemSafeToDelete(itemId: string): Promise<boolean> {
+    const result = await this.pool.query<{ deleted_at: string | null }>(
+      `SELECT deleted_at FROM inventory_items WHERE id = $1`,
+      [itemId]
+    );
+
+    if (result.rows.length === 0) return true;
+    return result.rows[0].deleted_at !== null;
+  }
+
   async getFilesByAssetGroup(assetGroupId: string): Promise<AuctionFile[]> {
     const result = await this.pool.query<AuctionFile>(
       `SELECT * FROM auction_files WHERE asset_group_id = $1`,

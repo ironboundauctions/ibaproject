@@ -150,6 +150,18 @@ export class CleanupProcessor {
       return;
     }
 
+    if (file.item_id) {
+      const safeToDelete = await this.db.isItemSafeToDelete(file.item_id);
+      if (!safeToDelete) {
+        logger.warn('Skipping cleanup - linked inventory item is still active (not deleted)', {
+          fileId: file.id,
+          itemId: file.item_id,
+          assetGroupId: file.asset_group_id
+        });
+        return;
+      }
+    }
+
     let b2DeletionSuccess = false;
     let dbDeletionSuccess = false;
     let errorMessage: string | null = null;
