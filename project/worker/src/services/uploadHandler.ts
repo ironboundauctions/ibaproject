@@ -61,7 +61,8 @@ export class UploadHandler {
           b2Key: sourceB2Key,
           width: variants.display.width,
           height: variants.display.height,
-          displayOrder: nextDisplayOrder
+          displayOrder: nextDisplayOrder,
+          itemId: item_id
         }
       );
       createdFileIds.push(sourceVariantId);
@@ -97,7 +98,8 @@ export class UploadHandler {
             b2Key,
             width: data.width,
             height: data.height,
-            displayOrder: nextDisplayOrder
+            displayOrder: nextDisplayOrder,
+            itemId: item_id
           }
         );
         createdFileIds.push(variantId);

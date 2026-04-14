@@ -80,17 +80,28 @@ export class BarcodeScanner {
    * @returns Decoded barcode text or null if no barcode found
    */
   static async scanUrl(url: string): Promise<string | null> {
+    let objectUrl: string | null = null;
     try {
       console.log('[BARCODE] Scanning URL:', url);
-      const result = await this.scanImageUrl(url);
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      const proxyUrl = `${supabaseUrl}/functions/v1/image-proxy?url=${encodeURIComponent(url)}`;
+      const response = await fetch(proxyUrl, {
+        headers: { Authorization: `Bearer ${anonKey}` },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      objectUrl = URL.createObjectURL(blob);
+      const result = await this.scanImageUrl(objectUrl);
       if (result) {
         console.log('[BARCODE] Scan successful! Text:', result);
       }
       return result;
     } catch (error) {
       console.error('[BARCODE] Scan failed:', error);
-      console.log('[BARCODE] Tip: Ensure the barcode is clear, well-lit, and takes up a significant portion of the image');
       return null;
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     }
   }
 

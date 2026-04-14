@@ -1,148 +1,189 @@
-import { AuctionEvent } from '../types/auction';
-
-// Local storage for auction events
-const EVENTS_STORAGE_KEY = 'ironbound_auction_events';
+import { supabase } from '../lib/supabase';
 
 export class EventService {
-  static getLocalEvents(): any[] {
-    try {
-      const stored = localStorage.getItem(EVENTS_STORAGE_KEY);
-      const events = stored ? JSON.parse(stored) : [];
-      return events;
-    } catch (error) {
-      console.error('Error loading events from localStorage:', error);
-      return [];
-    }
+  static async getAllEvents(): Promise<any[]> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .select('*')
+      .order('start_date', { ascending: true });
+
+    if (error) throw new Error(error.message);
+    return data || [];
   }
 
-  static saveLocalEvents(events: any[]): void {
-    try {
-      localStorage.setItem(EVENTS_STORAGE_KEY, JSON.stringify(events));
-    } catch (error) {
-      console.error('Error saving events to localStorage:', error);
-      throw new Error('Failed to save event data');
+  static async getPublishedEvents(): Promise<any[]> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .select('*, event_inventory_assignments(count)')
+      .in('status', ['published', 'active', 'completed'])
+      .order('start_date', { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    return (data || []).map((event: any) => ({
+      ...event,
+      total_lots: event.event_inventory_assignments?.[0]?.count ?? 0,
+    }));
+  }
+
+  static async getEventById(id: string): Promise<any | null> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  static async generateEventNumber(): Promise<string> {
+    const year = new Date().getFullYear();
+
+    const { data, error } = await supabase.rpc('next_event_sequence', { p_year: year });
+    if (error || data == null) {
+      const { data: existing } = await supabase
+        .from('auction_events')
+        .select('event_number')
+        .like('event_number', `${year}%`)
+        .order('event_number', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const last = existing?.event_number ? parseInt(existing.event_number.slice(4), 10) : 0;
+      return `${year}${String(last + 1).padStart(2, '0')}`;
     }
+    return `${year}${String(data).padStart(2, '0')}`;
   }
 
   static async createAuctionEvent(eventData: any): Promise<any> {
-    const events = this.getLocalEvents();
-    
-    const newEvent = {
-      id: crypto.randomUUID(),
+    const event_number = await EventService.generateEventNumber();
+
+    const row = {
       title: eventData.title,
       description: eventData.description,
       auction_type: eventData.auction_type || 'live',
-      timezone: eventData.timezone || 'America/New_York',
+      timezone: eventData.timezone || 'America/Chicago',
       start_date: eventData.start_date,
       end_date: eventData.end_date,
-      registration_start: eventData.registration_start,
-      location: eventData.location,
-      auctioneer: eventData.auctioneer,
+      registration_start: eventData.registration_start || eventData.start_date,
+      location: eventData.location || '',
+      auctioneer: eventData.auctioneer ? JSON.stringify(eventData.auctioneer) : null,
       event_terms: eventData.event_terms || '',
       main_image_url: eventData.main_image_url || '',
-      buyers_premium: eventData.buyers_premium || 10,
-      cc_card_fees: eventData.cc_card_fees || 3,
+      buyers_premium: eventData.buyers_premium ?? 10,
+      cc_card_fees: eventData.cc_card_fees ?? 3,
+      bid_increment: eventData.bid_increment ?? 25,
+      stream_url: eventData.stream_url || '',
+      auto_accept_online_bids: eventData.auto_accept_online_bids ?? true,
+      pre_bidding_enabled: eventData.pre_bidding_enabled ?? false,
       status: 'draft',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      lots: [],
-      total_lots: 0,
-      highest_bid: 0,
-      total_bids: 0,
-      // Convert to auction format for compatibility
-      starting_price: null,
-      current_bid: null,
-      category: 'Auction Event',
-      image_url: eventData.main_image_url || 'https://images.pexels.com/photos/4386431/pexels-photo-4386431.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2',
-      end_time: eventData.end_date,
-      seller: { 
-        name: 'IronBound Auctions',
-        joined_date: new Date().toISOString(),
-        total_bids: 0,
-        auctions_won: 0
-      },
-      bid_count: 0,
-      lot_number: `EVENT-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`,
-      has_reserve: false,
-      // Event-specific fields to distinguish from regular auctions
-      is_event: true,
-      registered_bidders: 0
+      event_number,
     };
-    
-    events.push(newEvent);
-    this.saveLocalEvents(events);
-    
-    return newEvent;
+
+    const { data, error } = await supabase
+      .from('auction_events')
+      .insert(row)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
   }
 
   static async updateAuctionEvent(id: string, eventData: any): Promise<any> {
-    console.log('🔄 EventService.updateAuctionEvent - updating event:', id);
-    console.log('📥 EventService.updateAuctionEvent - EXACT incoming dates:', {
-      start_date: eventData.start_date,
-      end_date: eventData.end_date,
-      registration_start: eventData.registration_start
-    });
-    
-    const events = this.getLocalEvents();
-    const index = events.findIndex(e => e.id === id);
-    
-    if (index === -1) {
-      throw new Error('Event not found');
-    }
-    
-    console.log('📋 EventService.updateAuctionEvent - current stored dates:', {
-      start_date: events[index].start_date,
-      end_date: events[index].end_date,
-      registration_start: events[index].registration_start
-    });
-    
-    // Store dates EXACTLY as received - no processing at all
-    const updatedEvent = {
-      ...events[index],
+    const row: any = {
       title: eventData.title,
       description: eventData.description,
       auction_type: eventData.auction_type,
       timezone: eventData.timezone,
-      start_date: eventData.start_date,  // EXACT copy
-      end_date: eventData.end_date,      // EXACT copy
-      registration_start: eventData.registration_start, // EXACT copy
+      start_date: eventData.start_date,
+      end_date: eventData.end_date,
+      registration_start: eventData.registration_start || eventData.start_date,
       location: eventData.location,
-      auctioneer: eventData.auctioneer,
       event_terms: eventData.event_terms,
       main_image_url: eventData.main_image_url,
       buyers_premium: eventData.buyers_premium,
       cc_card_fees: eventData.cc_card_fees,
       updated_at: new Date().toISOString(),
-      // Update auction format fields too
-      image_url: eventData.main_image_url || events[index].image_url,
-      end_time: eventData.end_date,
-      is_event: true
     };
-    
-    console.log('💾 EventService.updateAuctionEvent - EXACT dates being saved:', {
-      start_date: updatedEvent.start_date,
-      end_date: updatedEvent.end_date,
-      registration_start: updatedEvent.registration_start
-    });
-    
-    events[index] = updatedEvent;
-    this.saveLocalEvents(events);
-    
-    console.log('✅ EventService.updateAuctionEvent - successfully updated event');
-    return updatedEvent;
+
+    if (eventData.auctioneer !== undefined) {
+      row.auctioneer = eventData.auctioneer ? JSON.stringify(eventData.auctioneer) : null;
+    }
+    if (eventData.bid_increment !== undefined) row.bid_increment = eventData.bid_increment;
+    if (eventData.stream_url !== undefined) row.stream_url = eventData.stream_url;
+    if (eventData.auto_accept_online_bids !== undefined) row.auto_accept_online_bids = eventData.auto_accept_online_bids;
+    if (eventData.pre_bidding_enabled !== undefined) row.pre_bidding_enabled = eventData.pre_bidding_enabled;
+
+    const { data, error } = await supabase
+      .from('auction_events')
+      .update(row)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  static async publishEvent(id: string): Promise<any> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .update({ status: 'published', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  static async unpublishEvent(id: string): Promise<any> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .update({ status: 'draft', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
   }
 
   static async deleteAuctionEvent(id: string): Promise<void> {
-    console.log('EventService.deleteAuctionEvent - deleting event:', id);
-    
-    const events = this.getLocalEvents();
-    const filteredEvents = events.filter(e => e.id !== id);
-    
-    if (filteredEvents.length === events.length) {
-      throw new Error('Event not found');
-    }
-    
-    this.saveLocalEvents(filteredEvents);
-    console.log('EventService.deleteAuctionEvent - successfully deleted event');
+    const { error } = await supabase
+      .from('auction_events')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw new Error(error.message);
   }
+
+  static normalizeEventForDisplay(event: any): any {
+    let auctioneer = event.auctioneer;
+    if (typeof auctioneer === 'string') {
+      try { auctioneer = JSON.parse(auctioneer); } catch { auctioneer = { name: auctioneer, license: '' }; }
+    }
+
+    return {
+      ...event,
+      auctioneer,
+      is_event: true,
+      image_url: event.main_image_url || 'https://images.pexels.com/photos/4386431/pexels-photo-4386431.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2',
+      end_time: event.end_date,
+      starting_price: 0,
+      current_bid: 0,
+      category: 'Auction Event',
+      bid_count: 0,
+      lot_number: '',
+      has_reserve: false,
+      seller: { name: 'IronBound Auctions', joined_date: event.created_at, total_bids: 0, auctions_won: 0 },
+      total_lots: event.total_lots ?? 0,
+      registered_bidders: 0,
+    };
+  }
+
+  // Legacy shims — kept so adminService.ts re-exports still compile
+  static getLocalEvents(): any[] { return []; }
+  static saveLocalEvents(_events: any[]): void { return; }
 }

@@ -1,19 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X, Upload } from 'lucide-react';
+import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X, Upload, Gavel, Info } from 'lucide-react';
 import { InventoryService, InventoryItem } from '../services/inventoryService';
-import { ConsignerService } from '../services/consignerService';
-import { Consigner } from '../types/consigner';
+import { ConsignorService } from '../services/consignerService';
+import { Consignor } from '../types/consigner';
 import InventoryItemFormNew from './InventoryItemFormNew';
 import ImageGalleryModal from './ImageGalleryModal';
 import BulkActions from './BulkActions';
 import BulkUploadModal from './BulkUploadModal';
 import AdvancedFilters, { FilterState } from './AdvancedFilters';
+import AssignToEventModal from './AssignToEventModal';
+import InventoryItemDetail from './InventoryItemDetail';
 import { formatCurrency, EQUIPMENT_CATEGORIES } from '../utils/formatters';
 import { supabase } from '../lib/supabase';
 
 export default function GlobalInventoryManagement() {
   const [items, setItems] = useState<InventoryItem[]>([]);
-  const [consigners, setConsigners] = useState<Consigner[]>([]);
+  const [consigners, setConsigners] = useState<Consignor[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -40,6 +42,9 @@ export default function GlobalInventoryManagement() {
   });
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [bulkUploadItemId, setBulkUploadItemId] = useState<string | null>(null);
+  const [assignToEventItem, setAssignToEventItem] = useState<InventoryItem | null>(null);
+  const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
+  const [eventNumbersByItemId, setEventNumbersByItemId] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     fetchData();
@@ -49,10 +54,30 @@ export default function GlobalInventoryManagement() {
     try {
       const [itemsData, consignersData] = await Promise.all([
         InventoryService.getAllItems(),
-        ConsignerService.getConsigners()
+        ConsignorService.getConsignors()
       ]);
       setItems(itemsData);
       setConsigners(consignersData);
+
+      if (itemsData.length > 0) {
+        const itemIds = itemsData.map(item => item.id);
+        const { data: assignmentRows } = await supabase
+          .from('event_inventory_assignments')
+          .select('inventory_id, auction_events(event_number)')
+          .in('inventory_id', itemIds);
+
+        if (assignmentRows) {
+          const map: Record<string, string[]> = {};
+          assignmentRows.forEach((row: any) => {
+            const num = row.auction_events?.event_number;
+            if (num) {
+              if (!map[row.inventory_id]) map[row.inventory_id] = [];
+              map[row.inventory_id].push(num);
+            }
+          });
+          setEventNumbersByItemId(map);
+        }
+      }
 
       // Fetch file counts and thumbnails in a single query
       if (itemsData.length > 0) {
@@ -141,8 +166,8 @@ export default function GlobalInventoryManagement() {
           comparison = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
           break;
         case 'consigner':
-          const consignerA = getConsignerName(a.consigner_id);
-          const consignerB = getConsignerName(b.consigner_id);
+          const consignerA = getConsignorName(a.consigner_id);
+          const consignerB = getConsignorName(b.consigner_id);
           comparison = consignerA.localeCompare(consignerB);
           break;
       }
@@ -161,13 +186,26 @@ export default function GlobalInventoryManagement() {
   };
 
   const handleDeleteItem = async (item: InventoryItem) => {
-    if (!confirm(`Are you sure you want to delete item ${item.inventory_number}?`)) {
-      return;
-    }
-
     try {
+      const assignments = await InventoryService.getItemEventAssignments(item.id);
+
+      if (assignments.length > 0) {
+        const eventNames = assignments.map(a => a.event?.title || 'Unknown Event').join(', ');
+        const confirmed = confirm(
+          `Item ${item.inventory_number} is currently assigned to ${assignments.length} event${assignments.length > 1 ? 's' : ''}: ${eventNames}.\n\nDeleting this item will automatically remove it from those events. Do you want to continue?`
+        );
+        if (!confirmed) return;
+
+        await InventoryService.removeAllEventAssignments(item.id);
+      } else {
+        if (!confirm(`Are you sure you want to delete item ${item.inventory_number}?`)) {
+          return;
+        }
+      }
+
       await InventoryService.deleteItem(item.id);
       setItems(prev => prev.filter(i => i.id !== item.id));
+      setEventNumbersByItemId(prev => { const next = { ...prev }; delete next[item.id]; return next; });
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to delete item');
     }
@@ -203,12 +241,12 @@ export default function GlobalInventoryManagement() {
     }
   };
 
-  const getConsignerName = (consignerId?: string) => {
+  const getConsignorName = (consignerId?: string) => {
     if (!consignerId) return 'N/A';
-    const consigner = consigners.find(c => c.id === consignerId);
-    if (!consigner) return 'Unknown';
-    const name = (consigner as any).name || consigner.full_name || 'Unknown';
-    const customerNumber = consigner.customer_number;
+    const consignor = consigners.find(c => c.id === consignerId);
+    if (!consignor) return 'Unknown';
+    const name = (consignor as any).name || consignor.full_name || 'Unknown';
+    const customerNumber = consignor.customer_number;
     return `${name} (${customerNumber})`;
   };
 
@@ -221,13 +259,16 @@ export default function GlobalInventoryManagement() {
         .eq('published_status', 'published')
         .is('detached_at', null)
         .in('variant', ['display', 'video'])
-        .order('created_at', { ascending: true });
+        .order('display_order', { ascending: true, nullsFirst: false });
 
       if (error) throw error;
 
       // Group files by asset_group_id to handle video + thumbnail pairs
+      // Exclude barcode asset group
+      const barcodeGroupId = item.barcode_asset_group_id;
       const assetGroups = new Map<string, any[]>();
       (files || []).forEach(file => {
+        if (barcodeGroupId && file.asset_group_id === barcodeGroupId) return;
         const groupId = file.asset_group_id || file.cdn_url;
         if (!assetGroups.has(groupId)) {
           assetGroups.set(groupId, []);
@@ -291,13 +332,32 @@ export default function GlobalInventoryManagement() {
   };
 
   const handleBulkDelete = async () => {
-    if (!confirm(`Are you sure you want to delete ${selectedItems.size} items? This action cannot be undone.`)) {
-      return;
-    }
-
     try {
-      await Promise.all(Array.from(selectedItems).map(id => InventoryService.deleteItem(id)));
+      const ids = Array.from(selectedItems);
+      const assignmentChecks = await Promise.all(
+        ids.map(id => InventoryService.getItemEventAssignments(id))
+      );
+
+      const assignedCount = assignmentChecks.filter(a => a.length > 0).length;
+
+      if (assignedCount > 0) {
+        const confirmed = confirm(
+          `${assignedCount} of the ${ids.length} selected items are currently assigned to events.\n\nDeleting them will automatically remove those event assignments. Do you want to continue?`
+        );
+        if (!confirmed) return;
+
+        await Promise.all(
+          ids.map((id, i) => assignmentChecks[i].length > 0 ? InventoryService.removeAllEventAssignments(id) : Promise.resolve())
+        );
+      } else {
+        if (!confirm(`Are you sure you want to delete ${selectedItems.size} items? This action cannot be undone.`)) {
+          return;
+        }
+      }
+
+      await Promise.all(ids.map(id => InventoryService.deleteItem(id)));
       setItems(prev => prev.filter(item => !selectedItems.has(item.id)));
+      setEventNumbersByItemId(prev => { const next = { ...prev }; ids.forEach(id => delete next[id]); return next; });
       setSelectedItems(new Set());
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to delete items');
@@ -334,13 +394,13 @@ export default function GlobalInventoryManagement() {
   };
 
   const convertToCSV = (data: InventoryItem[]) => {
-    const headers = ['Inventory Number', 'Title', 'Description', 'Category', 'Consigner', 'Reserve Price', 'Status', 'Image URL'];
+    const headers = ['Inventory Number', 'Title', 'Description', 'Category', 'Consignor', 'Reserve Price', 'Status', 'Image URL'];
     const rows = data.map(item => [
       item.inventory_number,
       item.title,
       item.description || '',
       item.category || '',
-      getConsignerName(item.consigner_id),
+      getConsignorName(item.consigner_id),
       item.reserve_price?.toString() || '',
       item.status,
       item.image_url
@@ -409,6 +469,22 @@ export default function GlobalInventoryManagement() {
     setEditedTitle('');
   };
 
+  if (detailItem) {
+    return (
+      <InventoryItemDetail
+        item={detailItem}
+        onBack={() => setDetailItem(null)}
+        onItemUpdated={() => {
+          fetchData();
+          setDetailItem(prev => {
+            if (!prev) return null;
+            return items.find(i => i.id === prev.id) || prev;
+          });
+        }}
+      />
+    );
+  }
+
   if (showForm) {
     return (
       <div>
@@ -423,6 +499,7 @@ export default function GlobalInventoryManagement() {
             ← Back to Inventory
           </button>
         </div>
+        <div className="bg-white rounded-xl shadow-md p-6">
         <InventoryItemFormNew
           item={selectedItem || undefined}
           consigners={consigners}
@@ -435,6 +512,7 @@ export default function GlobalInventoryManagement() {
             await fetchData();
           }}
         />
+        </div>
       </div>
     );
   }
@@ -476,7 +554,7 @@ export default function GlobalInventoryManagement() {
 
       <AdvancedFilters
         categories={EQUIPMENT_CATEGORIES}
-        consigners={consigners.map(c => ({ id: c.id, name: c.name || c.full_name || 'Unknown' }))}
+        consigners={consigners.map(c => ({ id: c.id, name: (c as any).name || c.full_name || 'Unknown' }))}
         onFilterChange={setAdvancedFilters}
       />
 
@@ -489,13 +567,13 @@ export default function GlobalInventoryManagement() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by inventory number or title..."
-              className="w-full pl-10 pr-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors"
+              className="w-full pl-10 pr-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors bg-white text-ironbound-grey-900 placeholder-ironbound-grey-400"
             />
           </div>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors"
+            className="px-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors bg-white text-ironbound-grey-900"
           >
             <option value="all">All Status</option>
             <option value="available">Available</option>
@@ -511,7 +589,7 @@ export default function GlobalInventoryManagement() {
               setSortBy(newSortBy as typeof sortBy);
               setSortOrder(newSortOrder as 'asc' | 'desc');
             }}
-            className="px-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors"
+            className="px-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors bg-white text-ironbound-grey-900"
           >
             <option value="created_at-desc">Newest First</option>
             <option value="created_at-asc">Oldest First</option>
@@ -519,8 +597,8 @@ export default function GlobalInventoryManagement() {
             <option value="inventory_number-desc">Inventory # (Z-A)</option>
             <option value="title-asc">Title (A-Z)</option>
             <option value="title-desc">Title (Z-A)</option>
-            <option value="consigner-asc">Consigner (A-Z)</option>
-            <option value="consigner-desc">Consigner (Z-A)</option>
+            <option value="consigner-asc">Consignor (A-Z)</option>
+            <option value="consigner-desc">Consignor (Z-A)</option>
           </select>
         </div>
 
@@ -558,7 +636,7 @@ export default function GlobalInventoryManagement() {
             <table className="min-w-full divide-y divide-ironbound-grey-200">
               <thead className="bg-ironbound-grey-50">
                 <tr>
-                  <th className="px-4 py-3 text-left">
+                  <th className="px-3 py-3 text-left w-8">
                     <input
                       type="checkbox"
                       checked={selectedItems.size === filteredAndSortedItems.length && filteredAndSortedItems.length > 0}
@@ -566,28 +644,31 @@ export default function GlobalInventoryManagement() {
                       className="h-4 w-4 text-ironbound-orange-500 focus:ring-ironbound-orange-500 border-ironbound-grey-300 rounded cursor-pointer"
                     />
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider w-14">
                     Item
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
-                    Inventory Number
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                    Inv #
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                     Item Name
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                     Description
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
-                    Consigner
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                    Consignor
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                     Category
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
+                    Created
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                     Actions
                   </th>
                 </tr>
@@ -595,7 +676,7 @@ export default function GlobalInventoryManagement() {
               <tbody className="bg-white divide-y divide-ironbound-grey-200">
                 {filteredAndSortedItems.map((item) => (
                   <tr key={item.id} className="hover:bg-ironbound-grey-50 transition-colors">
-                    <td className="px-4 py-4">
+                    <td className="px-3 py-3">
                       <input
                         type="checkbox"
                         checked={selectedItems.has(item.id)}
@@ -603,11 +684,11 @@ export default function GlobalInventoryManagement() {
                         className="h-4 w-4 text-ironbound-orange-500 focus:ring-ironbound-orange-500 border-ironbound-grey-300 rounded cursor-pointer"
                       />
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-3">
                       <div className="relative group">
                         <button
                           onClick={() => handleImageClick(item)}
-                          className="relative h-12 w-12 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-ironbound-orange-500 transition-all"
+                          className="relative h-10 w-10 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-ironbound-orange-500 transition-all"
                         >
                           {(() => {
                             const cdnUrl = cdnThumbnailsByItemId[item.id];
@@ -616,13 +697,13 @@ export default function GlobalInventoryManagement() {
                               <img
                                 src={imageUrl}
                                 alt={item.title}
-                                className="h-12 w-12 object-cover"
+                                className="h-10 w-10 object-cover"
                                 onError={(e) => {
                                   e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
                                 }}
                               />
                             ) : (
-                              <div className="h-12 w-12 bg-gray-200 flex items-center justify-center text-xs text-gray-500">
+                              <div className="h-10 w-10 bg-gray-200 flex items-center justify-center text-xs text-gray-500">
                                 Processing...
                               </div>
                             );
@@ -645,10 +726,10 @@ export default function GlobalInventoryManagement() {
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-3">
                       <div className="font-mono text-sm text-ironbound-grey-900">#{item.inventory_number}</div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 py-3">
                       {editingTitleId === item.id ? (
                         <div className="space-y-2">
                           <input
@@ -694,7 +775,7 @@ export default function GlobalInventoryManagement() {
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-sm text-ironbound-grey-600 max-w-xs">
+                    <td className="px-3 py-3 text-sm text-ironbound-grey-600 max-w-xs">
                       {editingDescriptionId === item.id ? (
                         <div className="space-y-2">
                           <textarea
@@ -731,27 +812,52 @@ export default function GlobalInventoryManagement() {
                         </div>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-sm text-ironbound-grey-900">
-                      {getConsignerName(item.consigner_id)}
+                    <td className="px-3 py-3 text-sm text-ironbound-grey-900">
+                      {getConsignorName(item.consigner_id)}
                     </td>
-                    <td className="px-6 py-4 text-sm text-ironbound-grey-900">
+                    <td className="px-3 py-3 text-sm text-ironbound-grey-900">
                       {item.category}
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusBadgeColor(item.status)}`}>
-                        {item.status}
-                      </span>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-col gap-1">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusBadgeColor(item.status)}`}>
+                          {item.status}
+                        </span>
+                        {eventNumbersByItemId[item.id]?.length > 0 && (
+                          <span className="text-xs text-ironbound-grey-500 font-mono">
+                            #{eventNumbersByItemId[item.id].join(', #')}
+                          </span>
+                        )}
+                      </div>
                     </td>
-                    <td className="px-6 py-4 text-sm space-x-2">
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {item.created_at ? (
+                        <div className="text-xs">
+                          <div className="font-medium text-ironbound-grey-700">
+                            {new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </div>
+                          <div className="text-ironbound-grey-400 mt-0.5">
+                            {new Date(item.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-ironbound-grey-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-sm space-x-2">
                       <button
-                        onClick={() => {
-                          setBulkUploadItemId(item.id);
-                          setShowBulkUpload(true);
-                        }}
-                        className="text-blue-500 hover:text-blue-600 transition-colors"
-                        title="Bulk Upload Images"
+                        onClick={() => setDetailItem(item)}
+                        className="text-ironbound-grey-400 hover:text-ironbound-grey-700 transition-colors"
+                        title="View Details"
                       >
-                        <Upload className="h-4 w-4" />
+                        <Info className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setAssignToEventItem(item)}
+                        className="text-ironbound-grey-500 hover:text-ironbound-orange-600 transition-colors"
+                        title="Assign to Event"
+                      >
+                        <Gavel className="h-4 w-4" />
                       </button>
                       <button
                         onClick={() => handleEditItem(item)}
@@ -802,6 +908,34 @@ export default function GlobalInventoryManagement() {
           itemId={bulkUploadItemId || undefined}
           onSuccess={() => {
             fetchData();
+          }}
+        />
+      )}
+
+      {assignToEventItem && (
+        <AssignToEventModal
+          item={assignToEventItem}
+          onClose={() => setAssignToEventItem(null)}
+          onAssigned={async (eventId, eventTitle) => {
+            setAssignToEventItem(null);
+            setItems(prev =>
+              prev.map(i =>
+                i.id === assignToEventItem.id
+                  ? { ...i, status: 'assigned_to_auction' }
+                  : i
+              )
+            );
+            const { data: eventRow } = await supabase
+              .from('auction_events')
+              .select('event_number')
+              .eq('id', eventId)
+              .maybeSingle();
+            if (eventRow?.event_number) {
+              setEventNumbersByItemId(prev => ({
+                ...prev,
+                [assignToEventItem.id]: [...(prev[assignToEventItem.id] || []).filter(n => n !== eventRow.event_number), eventRow.event_number],
+              }));
+            }
           }}
         />
       )}

@@ -1,8 +1,12 @@
 import { supabase } from '../lib/supabase';
-import { Consigner } from '../types/consigner';
+import { Consignor } from '../types/consigner';
 
-export class ConsignerService {
-  static async getConsigners(): Promise<Consigner[]> {
+export class ConsignorService {
+  static async getAllConsignors(): Promise<Consignor[]> {
+    return ConsignorService.getConsignors();
+  }
+
+  static async getConsignors(): Promise<Consignor[]> {
     const { data, error } = await supabase
       .from('consigners')
       .select(`
@@ -21,7 +25,7 @@ export class ConsignerService {
     }));
   }
 
-  static async getConsignerById(id: string): Promise<Consigner | null> {
+  static async getConsignorById(id: string): Promise<Consignor | null> {
     const { data, error } = await supabase
       .from('consigners')
       .select(`
@@ -42,24 +46,24 @@ export class ConsignerService {
     };
   }
 
-  static async createConsigner(consignerData: any): Promise<Consigner> {
+  static async createConsignor(consignorData: any): Promise<Consignor> {
     const { data, error } = await supabase
       .from('consigners')
       .insert({
-        customer_number: consignerData.customer_number,
-        full_name: consignerData.full_name,
-        nickname: consignerData.nickname || null,
-        company: consignerData.company || null,
-        address: consignerData.address,
-        city: consignerData.city || null,
-        state: consignerData.state || null,
-        zip: consignerData.zip || null,
-        email: consignerData.email || null,
-        phone: consignerData.phone,
-        tax_id: consignerData.tax_id || null,
-        payment_terms: consignerData.payment_terms || null,
-        commission_rate: consignerData.commission_rate || 0,
-        notes: consignerData.notes || null
+        customer_number: consignorData.customer_number,
+        full_name: consignorData.full_name,
+        nickname: consignorData.nickname || null,
+        company: consignorData.company || null,
+        address: consignorData.address,
+        city: consignorData.city || null,
+        state: consignorData.state || null,
+        zip: consignorData.zip || null,
+        email: consignorData.email || null,
+        phone: consignorData.phone,
+        tax_id: consignorData.tax_id || null,
+        payment_terms: consignorData.payment_terms || null,
+        commission_rate: consignorData.commission_rate || 0,
+        notes: consignorData.notes || null
       })
       .select()
       .single();
@@ -73,7 +77,7 @@ export class ConsignerService {
     };
   }
 
-  static async updateConsigner(id: string, updates: any): Promise<Consigner> {
+  static async updateConsignor(id: string, updates: any): Promise<Consignor> {
     const { data, error } = await supabase
       .from('consigners')
       .update({
@@ -99,7 +103,7 @@ export class ConsignerService {
     };
   }
 
-  static async deleteConsigner(id: string): Promise<void> {
+  static async deleteConsignor(id: string): Promise<void> {
     const { error } = await supabase
       .from('consigners')
       .delete()
@@ -111,17 +115,15 @@ export class ConsignerService {
   static async generateCustomerNumber(): Promise<string> {
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-    // Get all existing customer numbers
-    const { data: existingConsigners } = await supabase
+    const { data: existingConsignors } = await supabase
       .from('consigners')
       .select('customer_number')
       .order('customer_number', { ascending: true });
 
     const existingNumbers = new Set(
-      (existingConsigners || []).map(c => c.customer_number).filter(Boolean)
+      (existingConsignors || []).map(c => c.customer_number).filter(Boolean)
     );
 
-    // Try each letter prefix in order
     for (const letter of letters) {
       for (let num = 1; num <= 9999; num++) {
         const customerNumber = `${letter}${num.toString().padStart(4, '0')}`;
@@ -131,11 +133,10 @@ export class ConsignerService {
       }
     }
 
-    // Fallback (should never happen unless we have 260,000 consigners)
     throw new Error('Unable to generate unique customer number');
   }
 
-  static validateCustomerNumber(customerNumber: string, currentConsignerId?: string): { isValid: boolean; error?: string } {
+  static validateCustomerNumber(customerNumber: string, currentConsignorId?: string): { isValid: boolean; error?: string } {
     if (!customerNumber || customerNumber.trim() === '') {
       return { isValid: false, error: 'Customer number is required' };
     }
@@ -246,3 +247,5 @@ export class ConsignerService {
     }
   }
 }
+
+export { ConsignorService as ConsignerService };

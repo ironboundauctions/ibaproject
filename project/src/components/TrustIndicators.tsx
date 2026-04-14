@@ -12,7 +12,7 @@ export default function TrustIndicators() {
     {
       icon: Award,
       title: 'Licensed Dealers',
-      description: 'Work with certified equipment dealers and trusted consigners',
+      description: 'Work with certified equipment dealers and trusted consignors',
       color: 'text-green-600'
     },
     {

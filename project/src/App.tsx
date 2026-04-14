@@ -6,6 +6,7 @@ import TrustIndicators from './components/TrustIndicators';
 import AuctionFilters from './components/AuctionFilters';
 import AuctionGrid from './components/AuctionGrid';
 import AuctionDetail from './components/AuctionDetail';
+import EventCatalogPage from './components/EventCatalogPage';
 import AuthModal from './components/AuthModal';
 import UserProfile from './components/UserProfile';
 import AdminPanel from './components/AdminPanel';
@@ -14,11 +15,10 @@ import AuthProvider from './components/AuthProvider';
 import PasswordReset from './components/PasswordReset';
 import { useAuth } from './hooks/useAuth';
 import { Auction } from './types/auction';
-import { AuctionService } from './services/auctionService';
 import { AdminService } from './services/adminService';
 import { isAdminUser, AuthService } from './services/authService';
 
-type View = 'home' | 'auctions' | 'auction-detail' | 'profile' | 'admin' | 'password-reset';
+type View = 'home' | 'auctions' | 'auction-detail' | 'event-catalog' | 'profile' | 'admin' | 'password-reset';
 
 type AdminView = 'dashboard' | 'auctions' | 'create-event' | 'edit-event' | 'manage-lots' | 'create-lot' | 'edit-lot' | 'user-management' | 'admin-management' | 'create-admin' | 'create-auction' | 'consigners' | 'inventory' | 'admin-recovery' | 'recently-removed';
 
@@ -27,6 +27,7 @@ function AppContent() {
   const [currentView, setCurrentView] = useState<View>('home');
   const [adminView, setAdminView] = useState<AdminView>('dashboard');
   const [selectedAuction, setSelectedAuction] = useState<Auction | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [auctions, setAuctions] = useState<Auction[]>([]);
   const [filteredAuctions, setFilteredAuctions] = useState<Auction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -90,12 +91,13 @@ function AppContent() {
         }
       } else if (path === '/auctions' || hash === '#auctions') {
         setCurrentView('auctions');
+      } else if (path.startsWith('/event/')) {
+        const id = path.replace('/event/', '').split('/')[0];
+        if (id) { setSelectedEventId(id); setCurrentView('event-catalog'); }
+        else setCurrentView('auctions');
       } else if (path === '/' || path === '') {
-        // Explicitly handle root path
         setCurrentView('home');
       } else {
-        // Unknown path - stay on current view but don't redirect
-        // This allows for future routes without breaking existing behavior
         setCurrentView('home');
       }
     };
@@ -115,16 +117,9 @@ function AppContent() {
   useEffect(() => {
     const fetchAuctions = async () => {
       try {
-        // Get both regular auctions and admin events
-        const [regularAuctions, adminEvents] = await Promise.all([
-          AuctionService.getAuctions(),
-          AdminService.getAllAuctions()
-        ]);
-
-        // Combine both types
-        const auctionData = [...adminEvents, ...regularAuctions];
-        setAuctions(auctionData);
-        setFilteredAuctions(auctionData);
+        const publishedEvents = await AdminService.getPublishedAuctions();
+        setAuctions(publishedEvents);
+        setFilteredAuctions(publishedEvents);
       } catch (error) {
         console.error('Error fetching auctions:', error);
       } finally {
@@ -135,9 +130,7 @@ function AppContent() {
     if (isInitialized) {
       fetchAuctions();
 
-      // Set up periodic refresh
-      const interval = setInterval(fetchAuctions, 30000); // Refresh every 30 seconds
-
+      const interval = setInterval(fetchAuctions, 30000);
       return () => clearInterval(interval);
     }
   }, [isInitialized]);
@@ -199,9 +192,15 @@ function AppContent() {
   };
 
   const handleAuctionClick = (auction: Auction) => {
-    setSelectedAuction(auction);
-    setCurrentView('auction-detail');
-    window.history.pushState({}, '', `/auction/${auction.id}`);
+    if ((auction as any).is_event) {
+      setSelectedEventId(auction.id);
+      setCurrentView('event-catalog');
+      window.history.pushState({}, '', `/event/${auction.id}`);
+    } else {
+      setSelectedAuction(auction);
+      setCurrentView('auction-detail');
+      window.history.pushState({}, '', `/auction/${auction.id}`);
+    }
   };
 
   const handleCategorySelect = (category: string) => {
@@ -263,7 +262,15 @@ function AppContent() {
       {currentView === 'auction-detail' && selectedAuction && (
         <AuctionDetail
           auction={selectedAuction}
-          onBack={() => setCurrentView('auctions')}
+          onBack={() => { setCurrentView('auctions'); window.history.pushState({}, '', '/auctions'); }}
+        />
+      )}
+
+      {currentView === 'event-catalog' && selectedEventId && (
+        <EventCatalogPage
+          eventId={selectedEventId}
+          onBack={() => { setCurrentView('auctions'); window.history.pushState({}, '', '/auctions'); }}
+          onAuthRequired={() => setShowAuthModal(true)}
         />
       )}
 

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { generateUUID } from '../utils/formatters';
 import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical, ExternalLink } from 'lucide-react';
 import {
   bulkUploadService,
@@ -194,7 +195,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
         source_key: f.source_key,
         mime_type: mimeType,
         filename: fileName,
-        assetGroupId: crypto.randomUUID(),
+        assetGroupId: generateUUID(),
       };
     });
 
@@ -784,9 +785,17 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
               {sourceMode === 'pc' && selectedFiles.length > 0 && (
                 <div className="space-y-4">
-                  <h3 className="font-medium text-gray-900">
-                    Selected Files ({selectedFiles.length})
-                  </h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-medium text-gray-900">
+                      Selected Files ({selectedFiles.length})
+                    </h3>
+                    <button
+                      onClick={handleAnalyze}
+                      className="bg-blue-600 text-white py-2 px-5 rounded-lg font-medium hover:bg-blue-700 transition-colors text-sm"
+                    >
+                      Analyze {selectedFiles.length} Images
+                    </button>
+                  </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {selectedFiles.map((file, index) => (
                       <div key={index} className="relative group">

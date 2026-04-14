@@ -491,17 +491,17 @@ export default function AdminLotForm({ lot, onSubmit, onCancel }: AdminLotFormPr
               </div>
             </div>
 
-            {/* Consigner Information */}
+            {/* Consignor Information */}
             <div className="space-y-6">
               <div className="border-b border-ironbound-grey-200 pb-4">
-                <h4 className="text-lg font-semibold text-ironbound-grey-900 mb-2">Consigner Information</h4>
+                <h4 className="text-lg font-semibold text-ironbound-grey-900 mb-2">Consignor Information</h4>
                 <p className="text-sm text-ironbound-grey-600">Details about who consigned this item</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-ironbound-grey-700 mb-2">
-                    Consigner Name
+                    Consignor Name
                   </label>
                   <div className="relative">
                     <User className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-ironbound-grey-400" />
@@ -511,7 +511,7 @@ export default function AdminLotForm({ lot, onSubmit, onCancel }: AdminLotFormPr
                       value={formData.consigner_name}
                       onChange={handleInputChange}
                       className="w-full pl-10 pr-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors"
-                      placeholder="Consigner name"
+                      placeholder="Consignor name"
                     />
                   </div>
                 </div>
@@ -689,7 +689,7 @@ export default function AdminLotForm({ lot, onSubmit, onCancel }: AdminLotFormPr
                     </div>
                     {previewData.consigner && (
                       <div className="text-right">
-                        <p className="text-xs text-ironbound-grey-500">Consigner</p>
+                        <p className="text-xs text-ironbound-grey-500">Consignor</p>
                         <p className="text-sm font-medium text-ironbound-grey-900">
                           {previewData.consigner.name}
                         </p>

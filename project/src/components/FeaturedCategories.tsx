@@ -67,7 +67,7 @@ export default function FeaturedCategories({ onCategorySelect }: FeaturedCategor
           </h2>
           <p className="text-lg text-ironbound-grey-200 max-w-2xl mx-auto">
             Browse our extensive inventory of construction equipment, agricultural machinery, 
-            trucks, and real estate from trusted consigners.
+            trucks, and real estate from trusted consignors.
           </p>
         </div>
 

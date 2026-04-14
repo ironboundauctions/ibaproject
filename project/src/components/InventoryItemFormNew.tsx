@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode, Search, FileText, Download } from 'lucide-react';
+import { X, Upload, Loader, ExternalLink, Play, GripVertical, ScanBarcode, Search, FileText, Download, Tag, DollarSign, StickyNote, Check, Globe } from 'lucide-react';
+import { generateUUID } from '../utils/formatters';
 import {
   DndContext,
   closestCenter,
@@ -18,7 +19,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { InventoryItem, CreateInventoryItemData } from '../services/inventoryService';
-import { Consigner } from '../types/consigner';
+import { Consignor } from '../types/consigner';
 import { FileUploadService } from '../services/fileUploadService';
 import { IronDriveService } from '../services/ironDriveService';
 import { supabase } from '../lib/supabase';
@@ -26,11 +27,22 @@ import { EQUIPMENT_CATEGORIES } from '../utils/formatters';
 import ImageGalleryModal from './ImageGalleryModal';
 import { BarcodeScanner } from '../utils/barcodeScanner';
 
+export interface EventContext {
+  eventId: string;
+  eventTitle: string;
+  assignmentId?: string;
+  lotNumber: string;
+  lotNotes: string;
+  lotStartingPrice: string;
+  onSaveEventFields: (fields: { lot_number: string; lot_notes: string; lot_starting_price: number | null }) => Promise<void>;
+}
+
 interface Props {
   item?: InventoryItem | null;
-  consigners: Consigner[];
+  consigners: Consignor[];
   onSubmit: (data: CreateInventoryItemData) => Promise<any>;
   onCancel: () => void;
+  eventContext?: EventContext;
 }
 
 interface SelectedFile {
@@ -212,12 +224,12 @@ function SortableFileItem({ file, onRemove, onImageClick, onVideoClick }: Sortab
   );
 }
 
-export default function InventoryItemFormNew({ item, consigners, onSubmit, onCancel }: Props) {
-  const [itemId] = useState(() => item?.id || crypto.randomUUID());
+export default function InventoryItemFormNew({ item, consigners, onSubmit, onCancel, eventContext }: Props) {
+  const [itemId] = useState(() => item?.id || generateUUID());
   const [originalAssetGroupIds] = useState<Set<string>>(new Set());
 
   const [formData, setFormData] = useState(() => {
-    const consigner = item?.consigner_id
+    const consignor = item?.consigner_id
       ? consigners.find(c => c.id === item.consigner_id)
       : undefined;
 
@@ -229,10 +241,11 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
       reserve_price: item?.reserve_price?.toString() || '',
       estimated_value_low: item?.estimated_value_low?.toString() || '',
       estimated_value_high: item?.estimated_value_high?.toString() || '',
-      consigner_customer_number: consigner?.customer_number || '',
+      consigner_customer_number: consignor?.customer_number || '',
       condition: item?.condition || '',
       additional_description: item?.notes || '',
-      has_title: item?.has_title || false
+      has_title: item?.has_title || false,
+      buyer_attention: item?.buyer_attention || ''
     };
   });
 
@@ -260,6 +273,13 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     fileName?: string;
   }>>([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [eventFields, setEventFields] = useState({
+    lot_number: eventContext?.lotNumber || '',
+    lot_notes: eventContext?.lotNotes || '',
+    lot_starting_price: eventContext?.lotStartingPrice || '',
+  });
+  const [isSavingEventFields, setIsSavingEventFields] = useState(false);
+  const [eventFieldsSaved, setEventFieldsSaved] = useState(false);
 
   useEffect(() => {
     if (item) {
@@ -457,7 +477,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
       for (const file of pickerFiles) {
         const fileName = file.filename || file.name || file.source_key?.split('/').pop() || 'unknown';
-        const assetGroupId = crypto.randomUUID();
+        const assetGroupId = generateUUID();
         const mimeType = file.mime_type || file.mimeType || guessMimeType(fileName);
 
         console.log('[IRONDRIVE] Staging file:', {
@@ -646,6 +666,23 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     }
   };
 
+  const handleSaveEventFields = async () => {
+    if (!eventContext) return;
+    setIsSavingEventFields(true);
+    setEventFieldsSaved(false);
+    try {
+      await eventContext.onSaveEventFields({
+        lot_number: eventFields.lot_number,
+        lot_notes: eventFields.lot_notes,
+        lot_starting_price: eventFields.lot_starting_price !== '' ? parseFloat(eventFields.lot_starting_price) : null,
+      });
+      setEventFieldsSaved(true);
+      setTimeout(() => setEventFieldsSaved(false), 2000);
+    } finally {
+      setIsSavingEventFields(false);
+    }
+  };
+
   const handleDocumentImagesSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
@@ -826,25 +863,54 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
     setSubmitProgress('Creating item...');
 
     try {
-      const consigner = consigners.find(c => c.customer_number === formData.consigner_customer_number);
+      const consignor = consigners.find(c => c.customer_number === formData.consigner_customer_number);
 
-      let barcodeImageUrl = '';
+      // Collect already-uploaded barcode/document data (for edit mode)
+      let barcodeImageUrl = barcodeImage?.url || '';
       let barcodeAssetGroupId = barcodeImage?.assetGroupId;
+      const uploadedDocuments: Array<{ url: string; assetGroupId: string }> = documentImages
+        .filter(doc => doc.url && doc.assetGroupId && doc.uploadStatus !== 'pending')
+        .map(doc => ({ url: doc.url!, assetGroupId: doc.assetGroupId! }));
 
-      // Upload barcode image to B2 via worker if there's a new one
+      const submitData: CreateInventoryItemData = {
+        id: itemId,
+        inventory_number: formData.inventory_number,
+        title: formData.title,
+        description: formData.description,
+        category: formData.category,
+        starting_price: parseFloat(formData.reserve_price) || 0,
+        reserve_price: parseFloat(formData.reserve_price) || undefined,
+        estimated_value_low: parseFloat(formData.estimated_value_low) || undefined,
+        estimated_value_high: parseFloat(formData.estimated_value_high) || undefined,
+        image_url: '',
+        consigner_id: consignor?.id,
+        condition: formData.condition,
+        notes: formData.additional_description,
+        buyer_attention: formData.buyer_attention || undefined,
+        barcode_image_url: barcodeImageUrl || undefined,
+        barcode_asset_group_id: barcodeAssetGroupId || undefined,
+        document_urls: uploadedDocuments.length > 0 ? uploadedDocuments : undefined,
+        has_title: formData.has_title
+      };
+
+      const result = await onSubmit(submitData);
+      const savedItemId = itemId;
+
+      setSubmitProgress('Item saved. Uploading files...');
+
+      // Upload barcode image AFTER item exists in DB (to avoid FK violation)
       if (barcodeImage?.file && barcodeImage.uploadStatus === 'pending') {
         setSubmitProgress('Uploading barcode image...');
         setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'uploading' } : null);
 
         try {
-          const uploadResult = await FileUploadService.uploadPCFileToWorker(barcodeImage.file, itemId) as any;
+          const uploadResult = await FileUploadService.uploadPCFileToWorker(barcodeImage.file, savedItemId) as any;
 
           if (!uploadResult.success || !uploadResult.asset_group_id) {
             throw new Error('Failed to upload barcode image');
           }
 
           const displayFile = uploadResult.files.find((f: any) => f.variant === 'display') || uploadResult.files[0];
-
           barcodeAssetGroupId = uploadResult.asset_group_id;
           barcodeImageUrl = displayFile.cdn_url;
 
@@ -855,18 +921,21 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             assetGroupId: barcodeAssetGroupId
           } : null);
 
+          await supabase.from('inventory_items').update({
+            barcode_image_url: barcodeImageUrl,
+            barcode_asset_group_id: barcodeAssetGroupId
+          }).eq('id', savedItemId);
+
           console.log('[BARCODE] Uploaded to B2:', { assetGroupId: barcodeAssetGroupId, url: barcodeImageUrl });
         } catch (err) {
           console.error('[BARCODE-UPLOAD] Error:', err);
           setBarcodeImage(prev => prev ? { ...prev, uploadStatus: 'error' } : null);
           throw new Error('Failed to upload barcode image');
         }
-      } else if (barcodeImage?.url) {
-        barcodeImageUrl = barcodeImage.url;
       }
 
-      // Upload all pending document images
-      const uploadedDocuments: Array<{ url: string; assetGroupId: string }> = [];
+      // Upload pending document images AFTER item exists in DB
+      const newlyUploadedDocuments: Array<{ url: string; assetGroupId: string }> = [];
 
       for (let i = 0; i < documentImages.length; i++) {
         const doc = documentImages[i];
@@ -878,12 +947,11 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           ));
 
           try {
-            // Add small delay between uploads to prevent overwhelming the worker
             if (i > 0) {
               await new Promise(resolve => setTimeout(resolve, 500));
             }
 
-            const uploadResult = await FileUploadService.uploadPCFileToWorker(doc.file, itemId) as any;
+            const uploadResult = await FileUploadService.uploadPCFileToWorker(doc.file, savedItemId) as any;
 
             if (!uploadResult.success || !uploadResult.asset_group_id) {
               throw new Error(`Failed to upload document ${i + 1}`);
@@ -891,7 +959,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
             const displayFile = uploadResult.files.find((f: any) => f.variant === 'display') || uploadResult.files[0];
 
-            uploadedDocuments.push({
+            newlyUploadedDocuments.push({
               url: displayFile.cdn_url,
               assetGroupId: uploadResult.asset_group_id
             });
@@ -913,37 +981,15 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             ));
             throw new Error(`Failed to upload document ${i + 1}`);
           }
-        } else if (doc.url && doc.assetGroupId) {
-          // Already uploaded document
-          uploadedDocuments.push({
-            url: doc.url,
-            assetGroupId: doc.assetGroupId
-          });
         }
       }
 
-      const submitData: CreateInventoryItemData = {
-        id: itemId,
-        inventory_number: formData.inventory_number,
-        title: formData.title,
-        description: formData.description,
-        category: formData.category,
-        starting_price: parseFloat(formData.reserve_price) || 0,
-        reserve_price: parseFloat(formData.reserve_price) || undefined,
-        estimated_value_low: parseFloat(formData.estimated_value_low) || undefined,
-        estimated_value_high: parseFloat(formData.estimated_value_high) || undefined,
-        image_url: '',
-        consigner_id: consigner?.id,
-        condition: formData.condition,
-        notes: formData.additional_description,
-        barcode_image_url: barcodeImageUrl || undefined,
-        barcode_asset_group_id: barcodeAssetGroupId || undefined,
-        document_urls: uploadedDocuments.length > 0 ? uploadedDocuments : undefined,
-        has_title: formData.has_title
-      };
-
-      const result = await onSubmit(submitData);
-      const savedItemId = itemId;
+      if (newlyUploadedDocuments.length > 0) {
+        const allDocuments = [...uploadedDocuments, ...newlyUploadedDocuments];
+        await supabase.from('inventory_items').update({
+          document_urls: allDocuments
+        }).eq('id', savedItemId);
+      }
 
       setSubmitProgress('Item created successfully!');
 
@@ -1078,9 +1124,103 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </button>
       </div>
 
+      {eventContext && (
+        <div className="rounded-xl border-2 border-ironbound-orange-200 bg-orange-50 overflow-hidden">
+          <div className="bg-ironbound-orange-500 px-5 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Tag className="w-4 h-4 text-white" />
+              <span className="text-white font-semibold text-sm">Event / Auction Details</span>
+              <span className="text-orange-200 text-xs font-normal ml-1">— {eventContext.eventTitle}</span>
+            </div>
+            <span className="text-orange-100 text-xs">Saved separately per event</span>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-ironbound-orange-700 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                  <Tag className="w-3.5 h-3.5" />
+                  Lot Number
+                </label>
+                <input
+                  type="text"
+                  value={eventFields.lot_number}
+                  onChange={(e) => setEventFields(prev => ({ ...prev, lot_number: e.target.value }))}
+                  placeholder="e.g. LOT-0001"
+                  className="w-full px-3 py-2 border border-orange-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-ironbound-orange-700 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                  <DollarSign className="w-3.5 h-3.5" />
+                  Starting Price Override
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={eventFields.lot_starting_price}
+                    onChange={(e) => setEventFields(prev => ({ ...prev, lot_starting_price: e.target.value }))}
+                    placeholder="Leave blank to use reserve"
+                    className="w-full pl-7 pr-3 py-2 border border-orange-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white text-sm"
+                  />
+                </div>
+                <p className="text-xs text-orange-500 mt-1">Overrides the item reserve price for this event only</p>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-ironbound-orange-700 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                <StickyNote className="w-3.5 h-3.5" />
+                Lot Notes
+              </label>
+              <textarea
+                value={eventFields.lot_notes}
+                onChange={(e) => setEventFields(prev => ({ ...prev, lot_notes: e.target.value }))}
+                rows={2}
+                placeholder="Auctioneer notes, ring notes, special instructions..."
+                className="w-full px-3 py-2 border border-orange-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white text-sm"
+              />
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleSaveEventFields}
+                disabled={isSavingEventFields}
+                className="flex items-center gap-2 px-4 py-2 bg-ironbound-orange-500 text-white rounded-lg hover:bg-ironbound-orange-600 disabled:opacity-50 text-sm font-medium transition-colors"
+              >
+                {isSavingEventFields ? (
+                  <>
+                    <Loader className="w-3.5 h-3.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : eventFieldsSaved ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    Saved!
+                  </>
+                ) : (
+                  'Save Event Details'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {eventContext && (
+        <div className="flex items-center gap-3 -my-1">
+          <div className="flex-1 h-px bg-gray-200" />
+          <div className="flex items-center gap-1.5 text-xs text-gray-400 font-medium">
+            <Globe className="w-3.5 h-3.5" />
+            Global Inventory Info — syncs across all events
+          </div>
+          <div className="flex-1 h-px bg-gray-200" />
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-4">
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Inventory Number *
           </label>
           <input
@@ -1088,12 +1228,12 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             required
             value={formData.inventory_number}
             onChange={(e) => setFormData(prev => ({ ...prev, inventory_number: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           />
         </div>
 
         <div className="col-span-2">
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Barcode/Inventory Sticker
           </label>
           <div className="flex gap-2">
@@ -1108,10 +1248,10 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                 />
                 <label
                   htmlFor="barcode-upload"
-                  className="flex-1 cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-400 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-800"
+                  className="flex-1 cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-300 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-100"
                 >
                   <ScanBarcode className="w-4 h-4 text-gray-400" />
-                  <span className="text-sm text-gray-300">Upload Barcode Image</span>
+                  <span className="text-sm text-gray-500">Upload Barcode Image</span>
                 </label>
               </>
             ) : (
@@ -1170,7 +1310,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </div>
 
         <div className="col-span-3">
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Documents
           </label>
           <div className="space-y-2">
@@ -1197,7 +1337,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                         />
                       ) : (
                         <div
-                          className="w-full h-24 rounded-lg bg-gray-700 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-600 transition-colors"
+                          className="w-full h-24 rounded-lg bg-gray-200 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-300 transition-colors"
                           onClick={() => {
                             if (doc.url) {
                               const link = document.createElement('a');
@@ -1208,7 +1348,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
                           }}
                         >
                           <FileText className="w-8 h-8 text-gray-400 mb-1" />
-                          <span className="text-xs text-gray-300 text-center px-1">{fileIcon}</span>
+                          <span className="text-xs text-gray-500 text-center px-1">{fileIcon}</span>
                           <Download className="w-3 h-3 text-gray-400 mt-1" />
                         </div>
                       )}
@@ -1245,10 +1385,10 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
               />
               <label
                 htmlFor="document-upload"
-                className="cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-400 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-800"
+                className="cursor-pointer flex items-center justify-center gap-2 px-3 py-2 border-2 border-dashed border-gray-300 rounded-lg hover:border-ironbound-orange-400 transition-colors bg-gray-100"
               >
                 <Upload className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-300">
+                <span className="text-sm text-gray-500">
                   {documentImages.length > 0 ? 'Add More Documents' : 'Upload Documents (Images, PDF, TXT, DOC)'}
                 </span>
               </label>
@@ -1257,31 +1397,31 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
-            Consigner
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Consignor
           </label>
           <select
             value={formData.consigner_customer_number}
             onChange={(e) => setFormData(prev => ({ ...prev, consigner_customer_number: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           >
-            <option value="">Select consigner...</option>
-            {consigners.map(consigner => (
-              <option key={consigner.id} value={consigner.customer_number}>
-                {consigner.customer_number} - {consigner.first_name} {consigner.last_name}
+            <option value="">Select consignor...</option>
+            {consigners.map(consignor => (
+              <option key={consignor.id} value={consignor.customer_number}>
+                {consignor.customer_number} - {consignor.first_name} {consignor.last_name}
               </option>
             ))}
           </select>
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Category
           </label>
           <select
             value={formData.category}
             onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           >
             <option value="">Select category...</option>
             {EQUIPMENT_CATEGORIES.map(cat => (
@@ -1293,44 +1433,44 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
 
       <div className="grid grid-cols-[1fr_auto] gap-4 items-end">
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Title
           </label>
           <input
             type="text"
             value={formData.title}
             onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           />
         </div>
 
         <div className="pb-0.5">
-          <label className="flex items-center gap-2 cursor-pointer bg-gray-800 px-4 py-2.5 rounded-lg border border-gray-600 hover:bg-gray-700 transition-colors">
+          <label className="flex items-center gap-2 cursor-pointer bg-gray-100 px-4 py-2.5 rounded-lg border border-gray-300 hover:bg-gray-200 transition-colors">
             <input
               type="checkbox"
               checked={formData.has_title}
               onChange={(e) => setFormData(prev => ({ ...prev, has_title: e.target.checked }))}
-              className="w-4 h-4 rounded border-gray-400 text-ironbound-orange-500 focus:ring-ironbound-orange-500 focus:ring-offset-gray-800"
+              className="w-4 h-4 rounded border-gray-400 text-ironbound-orange-500 focus:ring-ironbound-orange-500"
             />
-            <span className="text-sm font-medium text-white whitespace-nowrap">Has Title/Ownership Docs</span>
+            <span className="text-sm font-medium text-gray-700 whitespace-nowrap">Has Title/Ownership Docs</span>
           </label>
         </div>
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-white mb-1">
+        <label className="block text-sm font-medium text-gray-700 mb-1">
           Description
         </label>
         <textarea
           value={formData.description}
           onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
           rows={3}
-          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
         />
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-white mb-1">
+        <label className="block text-sm font-medium text-gray-700 mb-1">
           Additional Notes
         </label>
         <textarea
@@ -1338,13 +1478,27 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           onChange={(e) => setFormData(prev => ({ ...prev, additional_description: e.target.value }))}
           rows={3}
           placeholder="Any additional notes, comments, or information about this item..."
-          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
         />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Attention to Buyer
+        </label>
+        <textarea
+          value={formData.buyer_attention}
+          onChange={(e) => setFormData(prev => ({ ...prev, buyer_attention: e.target.value }))}
+          rows={2}
+          placeholder="Important notices for bidders (e.g. Sells with bill of sale only, Buyer responsible for removal, AS-IS no returns)..."
+          className="w-full px-3 py-2 border border-amber-400 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-transparent text-gray-900 bg-amber-50 placeholder-amber-400"
+        />
+        <p className="text-xs text-amber-600 mt-1">This notice will be shown publicly on the catalog listing.</p>
       </div>
 
       <div className="grid grid-cols-3 gap-4">
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Reserve Price
           </label>
           <input
@@ -1352,12 +1506,12 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             step="0.01"
             value={formData.reserve_price}
             onChange={(e) => setFormData(prev => ({ ...prev, reserve_price: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Est. Value (Low)
           </label>
           <input
@@ -1365,12 +1519,12 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             step="0.01"
             value={formData.estimated_value_low}
             onChange={(e) => setFormData(prev => ({ ...prev, estimated_value_low: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-white mb-1">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
             Est. Value (High)
           </label>
           <input
@@ -1378,13 +1532,13 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
             step="0.01"
             value={formData.estimated_value_high}
             onChange={(e) => setFormData(prev => ({ ...prev, estimated_value_high: e.target.value }))}
-            className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-white"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-transparent text-gray-900 bg-gray-100"
           />
         </div>
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-white mb-2">
+        <label className="block text-sm font-medium text-gray-700 mb-2">
           Media Files
         </label>
 
@@ -1404,7 +1558,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
               className="cursor-pointer flex flex-col items-center"
             >
               <Upload className="w-10 h-10 text-gray-400 mb-2" />
-              <span className="text-sm font-medium text-white mb-1">
+              <span className="text-sm font-medium text-gray-700 mb-1">
                 Upload from PC
               </span>
               <span className="text-xs text-gray-400">
@@ -1421,7 +1575,7 @@ export default function InventoryItemFormNew({ item, consigners, onSubmit, onCan
           >
             <div className="flex flex-col items-center">
               <ExternalLink className="w-10 h-10 text-gray-400 mb-2" />
-              <span className="text-sm font-medium text-white mb-1">
+              <span className="text-sm font-medium text-gray-700 mb-1">
                 Pick from IronDrive
               </span>
               <span className="text-xs text-gray-400">

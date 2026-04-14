@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { Calendar, MapPin, User, Gavel, AlertCircle, Image, FileText, Percent, Clock, Globe } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { generateUUID } from '../utils/formatters';
+import { Calendar, MapPin, User, Gavel, AlertCircle, Image, FileText, Percent, Clock, Globe, Upload, X, Loader, ToggleLeft, ToggleRight } from 'lucide-react';
 import { AuctionEvent } from '../types/auction';
+import { uploadEventImage } from '../services/fileUploadService';
 
 interface AdminEventFormProps {
   event?: AuctionEvent;
@@ -11,6 +13,10 @@ interface AdminEventFormProps {
 export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEventFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imagePreview, setImagePreview] = useState<string>(event?.main_image_url || '');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingEventIdRef = useRef<string>(event?.id || generateUUID());
 
   // Helper function to format date for datetime-local input
   const formatDateForInput = (dateString: string): string => {
@@ -63,7 +69,8 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
     event_terms: event?.event_terms || '',
     main_image_url: event?.main_image_url || '',
     buyers_premium: event?.buyers_premium?.toString() || '10',
-    cc_card_fees: event?.cc_card_fees?.toString() || '3'
+    cc_card_fees: event?.cc_card_fees?.toString() || '3',
+    pre_bidding_enabled: (event as any)?.pre_bidding_enabled ?? false,
   });
 
   // Common US timezones for auction events
@@ -108,8 +115,8 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
         registration_start: formData.registration_start
       });
       
-      // Store dates EXACTLY as entered - no conversion at all
       const eventData = {
+        id: pendingEventIdRef.current,
         title: formData.title,
         description: formData.description,
         auction_type: formData.auction_type,
@@ -125,7 +132,8 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
         event_terms: formData.event_terms,
         main_image_url: formData.main_image_url,
         buyers_premium: parseFloat(formData.buyers_premium),
-        cc_card_fees: parseFloat(formData.cc_card_fees)
+        cc_card_fees: parseFloat(formData.cc_card_fees),
+        pre_bidding_enabled: formData.pre_bidding_enabled,
       };
 
       console.log('📤 Submitting EXACT event data:', eventData);
@@ -478,6 +486,38 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
           </div>
         </div>
 
+        {/* Bidding Settings Section */}
+        <div className="space-y-6">
+          <div className="border-b border-ironbound-grey-200 pb-4">
+            <h4 className="text-lg font-semibold text-ironbound-grey-900 mb-2">Bidding Settings</h4>
+            <p className="text-sm text-ironbound-grey-600">Control bidding options for this event</p>
+          </div>
+
+          <div className="flex items-center justify-between p-4 bg-ironbound-grey-50 rounded-xl border border-ironbound-grey-200">
+            <div className="flex-1 pr-4">
+              <p className="text-sm font-semibold text-ironbound-grey-900">Allow Pre-Bidding</p>
+              <p className="text-xs text-ironbound-grey-500 mt-0.5">
+                When enabled, registered users can set a maximum pre-bid on any lot before the auction goes live.
+                Disable to prevent pre-bidding on this event.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFormData(prev => ({ ...prev, pre_bidding_enabled: !prev.pre_bidding_enabled }))}
+              className={`flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
+                formData.pre_bidding_enabled
+                  ? 'bg-green-600 text-white hover:bg-green-700'
+                  : 'bg-ironbound-grey-200 text-ironbound-grey-600 hover:bg-ironbound-grey-300'
+              }`}
+            >
+              {formData.pre_bidding_enabled
+                ? <><ToggleRight className="h-5 w-5" /> Pre-Bidding Open</>
+                : <><ToggleLeft className="h-5 w-5" /> Pre-Bidding Closed</>
+              }
+            </button>
+          </div>
+        </div>
+
         {/* Media & Terms Section */}
         <div className="space-y-6">
           <div className="border-b border-ironbound-grey-200 pb-4">
@@ -488,64 +528,91 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
           {/* Main Image */}
           <div>
             <label className="block text-sm font-medium text-ironbound-grey-700 mb-2">
-              Event Main Picture
+              Event Cover Image
             </label>
-            
-            {/* File Upload Option */}
-            <div className="mb-3">
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    const imageUrl = URL.createObjectURL(file);
-                    setFormData(prev => ({ ...prev, main_image_url: imageUrl }));
-                  }
-                }}
-                className="w-full px-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-ironbound-orange-50 file:text-ironbound-orange-700 hover:file:bg-ironbound-orange-100"
-              />
-              <p className="text-xs text-ironbound-grey-500 mt-1">
-                Choose an image file from your computer (JPG, PNG, GIF)
-              </p>
-            </div>
 
-            {/* OR Divider */}
-            <div className="flex items-center my-4">
-              <div className="flex-1 border-t border-ironbound-grey-300"></div>
-              <span className="px-3 text-sm text-ironbound-grey-500 bg-white">OR</span>
-              <div className="flex-1 border-t border-ironbound-grey-300"></div>
-            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setImageUploading(true);
+                setError('');
+                try {
+                  const url = await uploadEventImage(file, pendingEventIdRef.current);
+                  setImagePreview(url);
+                  setFormData(prev => ({ ...prev, main_image_url: url }));
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'Image upload failed');
+                } finally {
+                  setImageUploading(false);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                }
+              }}
+            />
 
-            {/* URL Input */}
-            <div className="relative">
-              <Image className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-ironbound-grey-400" />
-              <input
-                type="url"
-                name="main_image_url"
-                value={formData.main_image_url}
-                onChange={handleInputChange}
-                className="w-full pl-10 pr-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors text-gray-900 bg-white"
-                placeholder="https://example.com/event-image.jpg"
-              />
-            </div>
-            <p className="text-xs text-ironbound-grey-500 mt-1">
-              Enter an image URL, or leave empty to use a default image
-            </p>
-            
-            {/* Image Preview */}
-            {formData.main_image_url && (
-              <div className="mt-3">
+            {imagePreview ? (
+              <div className="relative w-full aspect-video max-h-64 rounded-xl overflow-hidden border border-ironbound-grey-200 bg-ironbound-grey-100">
                 <img
-                  src={formData.main_image_url}
-                  alt="Event preview"
-                  className="w-32 h-24 object-cover rounded-lg border border-ironbound-grey-200"
-                  onError={(e) => {
-                    console.log('Image failed to load');
-                    e.currentTarget.style.display = 'none';
-                  }}
+                  src={imagePreview}
+                  alt="Event cover preview"
+                  className="w-full h-full object-cover"
                 />
+                <div className="absolute inset-0 bg-black/0 hover:bg-black/30 transition-colors flex items-center justify-center group">
+                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={imageUploading}
+                      className="bg-white text-ironbound-grey-900 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-ironbound-grey-50 transition-colors shadow"
+                    >
+                      <Upload className="h-4 w-4" />
+                      Replace
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImagePreview('');
+                        setFormData(prev => ({ ...prev, main_image_url: '' }));
+                      }}
+                      className="bg-white text-red-600 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-red-50 transition-colors shadow"
+                    >
+                      <X className="h-4 w-4" />
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                {imageUploading && (
+                  <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
+                    <Loader className="h-8 w-8 animate-spin text-ironbound-orange-500" />
+                  </div>
+                )}
               </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={imageUploading}
+                className="w-full border-2 border-dashed border-ironbound-grey-300 rounded-xl p-10 flex flex-col items-center justify-center gap-3 text-ironbound-grey-500 hover:border-ironbound-orange-400 hover:text-ironbound-orange-500 hover:bg-ironbound-orange-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {imageUploading ? (
+                  <>
+                    <Loader className="h-8 w-8 animate-spin" />
+                    <span className="text-sm font-medium">Uploading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Image className="h-10 w-10" />
+                    <div className="text-center">
+                      <span className="text-sm font-medium block">Click to upload cover image</span>
+                      <span className="text-xs mt-1 block">JPG, PNG, WebP or GIF — max 10MB</span>
+                    </div>
+                  </>
+                )}
+              </button>
             )}
           </div>
 

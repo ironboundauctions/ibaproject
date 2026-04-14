@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { generateUUID } from '../utils/formatters';
 
 export interface MediaFile {
   id: string;
@@ -51,7 +52,7 @@ export interface MediaStatusResponse {
 
 class MediaPublishingService {
   async attachMedia(params: AttachMediaParams): Promise<{ file: MediaFile; job: PublishJob }> {
-    const asset_group_id = crypto.randomUUID();
+    const asset_group_id = generateUUID();
 
     const sourceFileData = {
       asset_group_id,

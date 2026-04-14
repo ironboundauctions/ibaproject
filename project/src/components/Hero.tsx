@@ -42,7 +42,7 @@ export default function Hero({ onGetStarted }: HeroProps) {
             {/* CTA Buttons */}
             <div className="flex flex-col sm:flex-row gap-4">
               <button
-                onClick={onGetStarted}
+                onClick={() => { onGetStarted(); window.history.pushState({}, '', '/auctions'); }}
                 className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-8 py-4 rounded-lg font-semibold text-lg transition-all duration-300 transform hover:scale-105 shadow-lg flex items-center justify-center space-x-2"
               >
                 <span>Browse All Events</span>

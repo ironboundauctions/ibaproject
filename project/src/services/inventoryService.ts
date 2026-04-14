@@ -5,6 +5,14 @@ export interface DocumentImage {
   assetGroupId: string;
 }
 
+export interface EventAssignment {
+  assignment_id?: string;
+  lot_number: string;
+  sale_order: number;
+  lot_notes: string;
+  lot_starting_price: number | null;
+}
+
 export interface InventoryItem {
   id: string;
   inventory_number: string;
@@ -28,6 +36,7 @@ export interface InventoryItem {
   barcode_asset_group_id?: string;
   document_urls?: DocumentImage[];
   has_title?: boolean;
+  buyer_attention?: string;
   status: 'cataloged' | 'assigned_to_auction' | 'live' | 'sold' | 'paid' | 'picked_up' | 'returned';
   created_at: string;
   updated_at: string;
@@ -56,6 +65,47 @@ export interface CreateInventoryItemData {
   barcode_asset_group_id?: string;
   document_urls?: DocumentImage[];
   has_title?: boolean;
+  buyer_attention?: string;
+}
+
+const FALLBACK_IMAGE = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
+
+async function enrichItemsWithImages(items: InventoryItem[]): Promise<InventoryItem[]> {
+  if (items.length === 0) return items;
+
+  const ids = items.map(i => i.id);
+
+  const barcodeAssetGroupIds = new Map(
+    items
+      .filter(i => i.barcode_asset_group_id)
+      .map(i => [i.id, i.barcode_asset_group_id!])
+  );
+
+  const { data: files } = await supabase
+    .from('auction_files')
+    .select('item_id, cdn_url, variant, asset_group_id, display_order')
+    .in('item_id', ids)
+    .is('detached_at', null)
+    .eq('published_status', 'published')
+    .in('variant', ['thumb', 'display'])
+    .order('display_order', { ascending: true, nullsFirst: false });
+
+  const thumbMap: Record<string, string> = {};
+  const displayMap: Record<string, string> = {};
+
+  for (const file of files || []) {
+    if (!file.cdn_url) continue;
+    const barcodeGroupId = barcodeAssetGroupIds.get(file.item_id);
+    if (barcodeGroupId && file.asset_group_id === barcodeGroupId) continue;
+
+    if (file.variant === 'thumb' && !thumbMap[file.item_id]) thumbMap[file.item_id] = file.cdn_url;
+    else if (file.variant === 'display' && !displayMap[file.item_id]) displayMap[file.item_id] = file.cdn_url;
+  }
+
+  return items.map(item => ({
+    ...item,
+    image_url: thumbMap[item.id] || displayMap[item.id] || item.image_url || FALLBACK_IMAGE
+  }));
 }
 
 export class InventoryService {
@@ -79,7 +129,18 @@ export class InventoryService {
       .order('inventory_number', { ascending: true });
 
     if (error) throw error;
-    return data || [];
+    return enrichItemsWithImages(data || []);
+  }
+
+  static async getAllItemsForEventModal(): Promise<InventoryItem[]> {
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('*')
+      .is('deleted_at', null)
+      .order('inventory_number', { ascending: true });
+
+    if (error) throw error;
+    return enrichItemsWithImages(data || []);
   }
 
   static async getItemById(id: string): Promise<InventoryItem | null> {
@@ -151,7 +212,6 @@ export class InventoryService {
   static async deleteItem(id: string): Promise<void> {
     console.log(`[INVENTORY] Soft-deleting inventory item ${id}`);
 
-    // Soft delete the item (files remain attached so the item stays complete)
     const { error } = await supabase
       .from('inventory_items')
       .update({ deleted_at: new Date().toISOString() })
@@ -162,6 +222,15 @@ export class InventoryService {
     console.log(`[INVENTORY] Item soft-deleted successfully with all files intact.`);
   }
 
+  static async removeAllEventAssignments(inventoryId: string): Promise<void> {
+    const { error } = await supabase
+      .from('event_inventory_assignments')
+      .delete()
+      .eq('inventory_id', inventoryId);
+
+    if (error) throw error;
+  }
+
   static async assignToEvent(inventoryId: string, eventId: string, lotNumber: string, saleOrder: number): Promise<void> {
     const { error: updateError } = await supabase
       .from('inventory_items')
@@ -170,13 +239,16 @@ export class InventoryService {
 
     if (updateError) throw updateError;
 
+    const m = lotNumber.match(/(\d+)/g);
+    const derivedOrder = m ? parseInt(m[m.length - 1], 10) : saleOrder;
+
     const { error: assignError } = await supabase
       .from('event_inventory_assignments')
       .insert({
         event_id: eventId,
         inventory_id: inventoryId,
         lot_number: lotNumber,
-        sale_order: saleOrder
+        sale_order: derivedOrder
       });
 
     if (assignError) throw assignError;
@@ -206,13 +278,16 @@ export class InventoryService {
     }
   }
 
-  static async getItemsForEvent(eventId: string): Promise<InventoryItem[]> {
+  static async getItemsForEvent(eventId: string): Promise<(InventoryItem & EventAssignment)[]> {
     const { data, error } = await supabase
       .from('event_inventory_assignments')
       .select(`
+        id,
         inventory_id,
         lot_number,
         sale_order,
+        lot_notes,
+        lot_starting_price,
         inventory_items (*)
       `)
       .eq('event_id', eventId)
@@ -220,11 +295,27 @@ export class InventoryService {
 
     if (error) throw error;
 
-    return (data || []).map((assignment: any) => ({
+    const items = (data || []).map((assignment: any) => ({
       ...assignment.inventory_items,
+      assignment_id: assignment.id,
       lot_number: assignment.lot_number,
-      sale_order: assignment.sale_order
+      sale_order: assignment.sale_order,
+      lot_notes: assignment.lot_notes ?? '',
+      lot_starting_price: assignment.lot_starting_price ?? null,
     }));
+    return enrichItemsWithImages(items) as Promise<(InventoryItem & EventAssignment)[]>;
+  }
+
+  static async updateEventAssignment(
+    assignmentId: string,
+    fields: Partial<EventAssignment>
+  ): Promise<void> {
+    const { error } = await supabase
+      .from('event_inventory_assignments')
+      .update(fields)
+      .eq('id', assignmentId);
+
+    if (error) throw error;
   }
 
   static async getItemMedia(itemId: string): Promise<Array<{
@@ -256,6 +347,59 @@ export class InventoryService {
       isVideo: file.mime_type?.startsWith('video/') || false,
       publishStatus: file.published_status || undefined,
       name: file.original_name || undefined
+    }));
+  }
+
+  static async getItemEventAssignments(inventoryId: string): Promise<Array<{
+    assignment_id: string;
+    event_id: string;
+    lot_number: string;
+    sale_order: number;
+    lot_notes: string;
+    lot_starting_price: number | null;
+    assigned_at: string;
+    event: {
+      id: string;
+      title: string;
+      start_date: string;
+      end_date: string;
+      status: string;
+      location: string;
+    };
+  }>> {
+    const { data, error } = await supabase
+      .from('event_inventory_assignments')
+      .select(`
+        id,
+        event_id,
+        lot_number,
+        sale_order,
+        lot_notes,
+        lot_starting_price,
+        assigned_at,
+        auction_events (
+          id,
+          title,
+          start_date,
+          end_date,
+          status,
+          location
+        )
+      `)
+      .eq('inventory_id', inventoryId)
+      .order('assigned_at', { ascending: false });
+
+    if (error) throw error;
+
+    return (data || []).map((row: any) => ({
+      assignment_id: row.id,
+      event_id: row.event_id,
+      lot_number: row.lot_number,
+      sale_order: row.sale_order,
+      lot_notes: row.lot_notes ?? '',
+      lot_starting_price: row.lot_starting_price ?? null,
+      assigned_at: row.assigned_at,
+      event: row.auction_events,
     }));
   }
 

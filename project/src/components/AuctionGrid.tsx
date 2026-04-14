@@ -41,7 +41,6 @@ export default function AuctionGrid({ auctions, onAuctionClick, isLoading }: Auc
             alt="No auctions found"
             className="w-64 h-48 object-cover rounded-lg mx-auto mb-6 opacity-50"
           />
-          <h3 className="text-2xl font-bold text-ironbound-grey-800 mb-2">No auctions found</h3>
           <h3 className="text-2xl font-bold text-ironbound-grey-800 mb-2">No events found</h3>
           <p className="text-ironbound-grey-600 mb-6">
             Try adjusting your search criteria or check back later for new events.

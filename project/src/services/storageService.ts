@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import { generateUUID } from '../utils/formatters';
 
 export interface UploadedFile {
   id: string;
@@ -65,7 +66,7 @@ export class StorageService {
       console.log('[B2] Upload successful:', result.cdnUrl);
 
       return {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         path: result.path,
         publicUrl: result.url || result.cdnUrl,
         cdnUrl: result.cdnUrl,

@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Plus, CreditCard as Edit, Trash2, Eye, BarChart3, Users, Gavel, DollarSign, List, UserPlus, Shield, Package, User, Key, Mail, Lock, X } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { ArrowLeft, Plus, CreditCard as Edit, Trash2, Eye, BarChart3, Users, Gavel, DollarSign, List, UserPlus, Shield, Package, User, Key, Mail, Lock, X, Globe, EyeOff, BookOpen, Info } from 'lucide-react';
 import { Auction } from '../types/auction';
 import { AdminStats } from '../types/admin';
 import { AdminService } from '../services/adminService';
@@ -9,11 +9,10 @@ import { isAdminUser, isMainAdmin, canManageAdmins, canManageRegularUsers, canAc
 import { AuctionService } from '../services/auctionService';
 import ConsignerManagement from './ConsignerManagement';
 import GlobalInventoryManagement from './GlobalInventoryManagement';
-import EventInventoryManager from './EventInventoryManager';
+import EventItemsPage from './EventItemsPage';
 import AdminEventForm from './AdminEventForm';
 import AdminLotForm from './AdminLotForm';
 import LotsGrid from './LotsGrid';
-import CreateAuctionModal from './CreateAuctionModal';
 import { AdminManagementPanel } from './AdminManagementPanel';
 import { UserPromotionPanel } from './UserPromotionPanel';
 import { RecentlyRemovedFiles } from './RecentlyRemovedFiles';
@@ -38,6 +37,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
   const [isLoading, setIsLoading] = useState(true);
   const [adminUsers, setAdminUsers] = useState<any[]>([]);
   const [managingEventInventory, setManagingEventInventory] = useState<{ id: string; title: string } | null>(null);
+  const [localAuctions, setLocalAuctions] = useState<Auction[]>(auctions);
 
   // Check if current user is admin
   const isAdmin = user && isAdminUser(user);
@@ -74,36 +74,24 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
     fetchData();
   }, []);
 
-  // Fetch auctions/events on component mount
-  useEffect(() => {
-    const fetchAuctions = async () => {
-      try {
-        const auctionsData = await AdminService.getAllAuctions();
-        onAuctionsUpdate(auctionsData);
-      } catch (error) {
-        console.error('Error fetching auctions for admin panel:', error);
-      }
-    };
+  const refreshAuctions = useCallback(async () => {
+    try {
+      const auctionsData = await AdminService.getAllAuctions();
+      setLocalAuctions(auctionsData);
+      onAuctionsUpdate(auctionsData);
+    } catch (error) {
+      console.error('Error fetching auctions for admin panel:', error);
+    }
+  }, []);
 
-    fetchAuctions();
-  }, [onAuctionsUpdate]);
+  useEffect(() => {
+    refreshAuctions();
+  }, []);
 
   const handleCreateEvent = async (eventData: any) => {
     try {
-      console.log('Creating new event:', eventData.title);
-      const newAuction = await AdminService.createAuctionEvent(eventData);
-      console.log('Event created successfully:', newAuction.id);
-      const updatedAuctions = [newAuction, ...auctions];
-      onAuctionsUpdate(updatedAuctions);
-      
-      // Force a refresh of the auctions list
-      setTimeout(async () => {
-        console.log('Refreshing auctions list...');
-        const refreshedAuctions = await AdminService.getAllAuctions();
-        console.log('Refreshed auctions count:', refreshedAuctions.length);
-        onAuctionsUpdate(refreshedAuctions);
-      }, 100);
-      
+      await AdminService.createAuctionEvent(eventData);
+      await refreshAuctions();
       handleTabChange('auctions');
     } catch (error) {
       console.error('Error creating auction event:', error);
@@ -113,10 +101,10 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
 
   const handleUpdateEvent = async (eventData: any) => {
     if (!selectedAuction) return;
-    
+
     try {
-      const updatedAuction = await AdminService.updateAuctionEvent(selectedAuction.id, eventData);
-      onAuctionsUpdate(auctions.map(a => a.id === selectedAuction.id ? updatedAuction : a));
+      await AdminService.updateAuctionEvent(selectedAuction.id, eventData);
+      await refreshAuctions();
       handleTabChange('auctions');
       setSelectedAuction(null);
     } catch (error) {
@@ -141,19 +129,32 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
 
   const handleDeleteAuction = async (id: string) => {
     if (!confirm('Are you sure you want to delete this auction event and all its lots?')) return;
-    
+
     try {
       await AdminService.deleteAuctionEvent(id);
-      onAuctionsUpdate(auctions.filter(a => a.id !== id));
+      await refreshAuctions();
     } catch (error) {
       console.error('Error deleting auction event:', error);
     }
   };
 
+  const handlePublishToggle = async (auction: any) => {
+    try {
+      if (auction.status === 'published' || auction.status === 'active') {
+        await AdminService.unpublishEvent(auction.id);
+      } else {
+        await AdminService.publishEvent(auction.id);
+      }
+      await refreshAuctions();
+    } catch (error) {
+      console.error('Error toggling publish status:', error);
+    }
+  };
+
   const handleCreateAuction = async (auctionData: any) => {
     try {
-      const newAuction = await AuctionService.createAuction(auctionData);
-      onAuctionsUpdate([newAuction, ...auctions]);
+      await AuctionService.createAuction(auctionData);
+      await refreshAuctions();
       handleTabChange('auctions');
     } catch (error) {
       console.error('Error creating auction:', error);
@@ -215,13 +216,13 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
             <button
               onClick={() => handleTabChange('auctions')}
               className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'auctions'
+                activeTab === 'auctions' || activeTab === 'create-event' || activeTab === 'edit-event'
                   ? 'border-ironbound-orange-500 text-ironbound-orange-500'
                   : 'border-transparent text-white hover:text-ironbound-orange-300 hover:border-ironbound-orange-300'
               }`}
             >
               <Gavel className="h-4 w-4 inline mr-2" />
-              Events & Items
+              Events
             </button>
             <button
               onClick={() => handleTabChange('consigners')}
@@ -232,18 +233,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
               }`}
             >
               <User className="h-4 w-4 inline mr-2" />
-              Consigners
-            </button>
-            <button
-              onClick={() => handleTabChange('create-event')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'create-event'
-                  ? 'border-ironbound-orange-500 text-ironbound-orange-500'
-                  : 'border-transparent text-white hover:text-ironbound-orange-300 hover:border-ironbound-orange-300'
-              }`}
-            >
-              <Plus className="h-4 w-4 inline mr-2" />
-              Create Event
+              Consignors
             </button>
             <button
               onClick={() => handleTabChange('inventory')}
@@ -420,7 +410,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
             <div className="bg-white rounded-xl shadow-md p-6">
               <h3 className="text-lg font-semibold text-ironbound-grey-900 mb-4">Recent Activity</h3>
               <div className="space-y-4">
-                {auctions.slice(0, 5).map((auction) => (
+                {localAuctions.slice(0, 5).map((auction) => (
                 <div 
                   key={auction.id} 
                   className="flex items-center justify-between p-4 bg-ironbound-grey-50 rounded-lg hover:bg-ironbound-grey-100 cursor-pointer transition-colors"
@@ -431,6 +421,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                       src={auction.image_url}
                       alt={auction.title}
                       className="w-12 h-12 rounded-lg object-cover"
+                      onError={(e) => { e.currentTarget.src = 'https://images.pexels.com/photos/4386431/pexels-photo-4386431.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2'; }}
                     />
                     <div>
                       <p className="font-medium text-ironbound-grey-900">{auction.title}</p>
@@ -470,7 +461,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
 
         {/* Auctions Management Tab */}
         {activeTab === 'auctions' && managingEventInventory && (
-          <EventInventoryManager
+          <EventItemsPage
             eventId={managingEventInventory.id}
             eventTitle={managingEventInventory.title}
             onBack={() => setManagingEventInventory(null)}
@@ -480,7 +471,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
         {activeTab === 'auctions' && !managingEventInventory && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-white">Events & Items</h2>
+              <h2 className="text-2xl font-bold text-white">Events</h2>
               <button
                 onClick={() => handleTabChange('create-event')}
                 className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
@@ -496,13 +487,10 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                   <thead className="bg-ironbound-grey-50">
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
-                        Event/Item
+                        Event
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                         Lots
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
-                        Info
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                         Status
@@ -516,7 +504,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-ironbound-grey-200">
-                    {auctions.map((auction) => (
+                    {localAuctions.map((auction) => (
                       <tr key={auction.id} className="hover:bg-ironbound-grey-50">
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="flex items-center">
@@ -524,13 +512,17 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                               src={auction.image_url}
                               alt={auction.title}
                               className="w-10 h-10 rounded-lg object-cover"
+                              onError={(e) => { e.currentTarget.src = 'https://images.pexels.com/photos/4386431/pexels-photo-4386431.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2'; }}
                             />
                             <div className="ml-4">
-                              <div className="text-sm font-medium text-ironbound-grey-900">
+                              <span className="text-sm font-medium text-ironbound-grey-900">
                                 {auction.title}
-                              </div>
-                              <div className="text-sm text-ironbound-grey-500">
-                                {auction.is_event ? 'Event' : 'Item'} • {auction.lot_number}
+                              </span>
+                              <div className="text-xs text-ironbound-grey-500 mt-0.5">
+                                {auction.is_event ? 'Event' : 'Item'}
+                                {auction.event_number && (
+                                  <span className="ml-1 text-ironbound-grey-400">· #{auction.event_number}</span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -538,14 +530,15 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-ironbound-grey-900">
                           {auction.is_event ? `${auction.total_lots || 0} lots` : 'Individual item'}
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-ironbound-grey-900">
-                          {auction.is_event ? `${auction.registered_bidders || 0} registered` : `${auction.bid_count || 0} bids • ${formatCurrency(auction.current_bid || auction.starting_price)}`}
-                        </td>
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                            auction.status === 'active' 
+                            auction.status === 'active'
                               ? 'bg-green-100 text-green-800'
-                              : auction.status === 'ended'
+                              : auction.status === 'published'
+                              ? 'bg-blue-100 text-blue-800'
+                              : auction.status === 'completed'
+                              ? 'bg-ironbound-grey-100 text-ironbound-grey-700'
+                              : auction.status === 'cancelled'
                               ? 'bg-red-100 text-red-800'
                               : 'bg-yellow-100 text-yellow-800'
                           }`}>
@@ -558,13 +551,25 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           <div className="flex items-center justify-end space-x-2">
                             <button
-                              onClick={() => {
-                                setManagingEventInventory({ id: auction.id, title: auction.title });
-                              }}
-                              className="text-blue-600 hover:text-blue-900 transition-colors"
-                              title="Manage Items"
+                              onClick={() => setManagingEventInventory({ id: auction.id, title: auction.title })}
+                              className="text-ironbound-grey-500 hover:text-ironbound-orange-600 transition-colors"
+                              title="Open Catalog"
                             >
-                              <Package className="h-4 w-4" />
+                              <BookOpen className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => handlePublishToggle(auction)}
+                              className={`transition-colors ${
+                                auction.status === 'published' || auction.status === 'active'
+                                  ? 'text-blue-600 hover:text-blue-900'
+                                  : 'text-ironbound-grey-400 hover:text-blue-600'
+                              }`}
+                              title={auction.status === 'published' || auction.status === 'active' ? 'Unpublish Event' : 'Publish Event'}
+                            >
+                              {auction.status === 'published' || auction.status === 'active'
+                                ? <EyeOff className="h-4 w-4" />
+                                : <Globe className="h-4 w-4" />
+                              }
                             </button>
                             <button
                               onClick={() => {
@@ -636,7 +641,7 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                   handleTabChange('auctions');
                   setSelectedAuction(null);
                 }}
-                initialData={selectedAuction}
+                event={selectedAuction}
               />
             </div>
           </div>

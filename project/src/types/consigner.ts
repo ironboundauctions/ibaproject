@@ -1,4 +1,4 @@
-export interface Consigner {
+export interface Consignor {
   id: string;
   customer_number: string; // Format: A0001, B0002, etc.
   full_name: string;
@@ -13,7 +13,7 @@ export interface Consigner {
   active_items: number;
 }
 
-export interface ConsignerFormData {
+export interface ConsignorFormData {
   customer_number: string;
   full_name: string;
   nickname: string;
@@ -63,3 +63,6 @@ export interface InventoryItemFormData {
   additional_images: string;
   specifications: { key: string; value: string }[];
 }
+
+export type { Consignor as Consigner };
+export type { ConsignorFormData as ConsignerFormData };

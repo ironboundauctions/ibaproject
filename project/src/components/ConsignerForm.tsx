@@ -1,38 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { User, Building, Mail, MapPin, Hash, Phone } from 'lucide-react';
-import { Consigner, ConsignerFormData } from '../types/consigner';
-import { ConsignerService } from '../services/consignerService';
+import { Consignor, ConsignorFormData } from '../types/consigner';
+import { ConsignorService } from '../services/consignerService';
 
-interface ConsignerFormProps {
-  consigner?: Consigner | null;
-  onSubmit: (consignerData: ConsignerFormData) => Promise<void>;
+interface ConsignorFormProps {
+  consignor?: Consignor | null;
+  onSubmit: (consignorData: ConsignorFormData) => Promise<void>;
   onCancel: () => void;
 }
 
-export default function ConsignerForm({ consigner, onSubmit, onCancel }: ConsignerFormProps) {
+export default function ConsignorForm({ consignor, onSubmit, onCancel }: ConsignorFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [formData, setFormData] = useState<ConsignerFormData>({
-    customer_number: consigner?.customer_number || '',
-    full_name: consigner?.full_name || '',
-    nickname: consigner?.nickname || '',
-    company: consigner?.company || '',
-    address: consigner?.address || '',
-    email: consigner?.email || '',
-    phone: consigner?.phone || '',
+  const [formData, setFormData] = useState<ConsignorFormData>({
+    customer_number: consignor?.customer_number || '',
+    full_name: consignor?.full_name || '',
+    nickname: consignor?.nickname || '',
+    company: consignor?.company || '',
+    address: consignor?.address || '',
+    email: consignor?.email || '',
+    phone: consignor?.phone || '',
   });
 
-  // Generate customer number on mount if creating new consigner
   useEffect(() => {
-    if (!consigner && !formData.customer_number) {
-      ConsignerService.generateCustomerNumber().then(generatedNumber => {
+    if (!consignor && !formData.customer_number) {
+      ConsignorService.generateCustomerNumber().then(generatedNumber => {
         setFormData(prev => ({ ...prev, customer_number: generatedNumber }));
       }).catch(err => {
         console.error('Failed to generate customer number:', err);
         setError('Failed to generate customer number');
       });
     }
-  }, [consigner, formData.customer_number]);
+  }, [consignor, formData.customer_number]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,15 +39,14 @@ export default function ConsignerForm({ consigner, onSubmit, onCancel }: Consign
     setIsLoading(true);
 
     try {
-      // Validate customer number format
-      const validation = ConsignerService.validateCustomerNumber(formData.customer_number, consigner?.id);
+      const validation = ConsignorService.validateCustomerNumber(formData.customer_number, consignor?.id);
       if (!validation.isValid) {
         throw new Error(validation.error);
       }
 
       await onSubmit(formData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save consigner');
+      setError(err instanceof Error ? err.message : 'Failed to save consignor');
     } finally {
       setIsLoading(false);
     }
@@ -64,7 +62,7 @@ export default function ConsignerForm({ consigner, onSubmit, onCancel }: Consign
 
   const generateNewCustomerNumber = async () => {
     try {
-      const newNumber = await ConsignerService.generateCustomerNumber();
+      const newNumber = await ConsignorService.generateCustomerNumber();
       setFormData(prev => ({ ...prev, customer_number: newNumber }));
     } catch (err) {
       console.error('Failed to generate customer number:', err);
@@ -77,10 +75,10 @@ export default function ConsignerForm({ consigner, onSubmit, onCancel }: Consign
       <div className="flex items-center justify-between mb-6">
         <div>
           <h3 className="text-xl font-bold text-ironbound-grey-900">
-            {consigner ? 'Edit Consigner' : 'Add New Consigner'}
+            {consignor ? 'Edit Consignor' : 'Add New Consignor'}
           </h3>
           <p className="text-sm text-ironbound-grey-600">
-            {consigner ? 'Update consigner information' : 'Create a new consigner profile'}
+            {consignor ? 'Update consignor information' : 'Create a new consignor profile'}
           </p>
         </div>
       </div>
@@ -112,7 +110,7 @@ export default function ConsignerForm({ consigner, onSubmit, onCancel }: Consign
                 placeholder="A0001"
               />
             </div>
-            {!consigner && (
+            {!consignor && (
               <button
                 type="button"
                 onClick={generateNewCustomerNumber}
@@ -255,7 +253,7 @@ export default function ConsignerForm({ consigner, onSubmit, onCancel }: Consign
             {isLoading ? (
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
             ) : (
-              consigner ? 'Update Consigner' : 'Create Consigner'
+              consignor ? 'Update Consignor' : 'Create Consignor'
             )}
           </button>
         </div>

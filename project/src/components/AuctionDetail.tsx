@@ -272,8 +272,8 @@ export default function AuctionDetail({ auction, onBack }: AuctionDetailProps) {
               </div>
               <div className="mt-4 p-4 bg-blue-50 rounded-lg">
                 <p className="text-sm text-blue-800">
-                  <strong>Multi-Consigner Event:</strong> Individual items in this auction event 
-                  will have their own consigners listed when you add lots to the event.
+                  <strong>Multi-Consignor Event:</strong> Individual items in this auction event
+                  will have their own consignors listed when you add lots to the event.
                 </p>
               </div>
             </div>

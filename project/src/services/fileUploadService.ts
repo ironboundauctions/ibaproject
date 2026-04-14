@@ -28,6 +28,20 @@ export interface UploadResponse {
   error?: string;
 }
 
+export async function uploadEventImage(file: File, eventId: string): Promise<string> {
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+  const path = `${eventId}/cover.${ext}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from('event-images')
+    .upload(path, file, { upsert: true, contentType: file.type });
+
+  if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
+
+  const { data } = supabase.storage.from('event-images').getPublicUrl(path);
+  return data.publicUrl;
+}
+
 export class FileUploadService {
   static async getUploadsByInventoryNumber(inventoryNumber: string): Promise<FileUploadRecord[]> {
     try {

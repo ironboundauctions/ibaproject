@@ -7,9 +7,11 @@ export class AdminService {
   // Re-export event methods for backward compatibility
   static getLocalEvents = EventService.getLocalEvents;
   static saveLocalEvents = EventService.saveLocalEvents;
-  static createAuctionEvent = EventService.createAuctionEvent;
-  static updateAuctionEvent = EventService.updateAuctionEvent;
-  static deleteAuctionEvent = EventService.deleteAuctionEvent;
+  static createAuctionEvent = EventService.createAuctionEvent.bind(EventService);
+  static updateAuctionEvent = EventService.updateAuctionEvent.bind(EventService);
+  static deleteAuctionEvent = EventService.deleteAuctionEvent.bind(EventService);
+  static publishEvent = EventService.publishEvent.bind(EventService);
+  static unpublishEvent = EventService.unpublishEvent.bind(EventService);
 
   // Re-export stats methods
   static getAdminStats = StatsService.getAdminStats;
@@ -20,28 +22,29 @@ export class AdminService {
   static updateLot = LotService.updateLot;
   static deleteLot = LotService.deleteLot;
 
+  static normalizeEvent = EventService.normalizeEventForDisplay;
+
   static async getAllAuctions(): Promise<any[]> {
-    // Return local events as "auctions" for the admin panel
-    const localEvents = EventService.getLocalEvents();
-    
-    // Also get any real auctions from database if connected
-    let dbAuctions: any[] = [];
-    if (hasSupabaseCredentials()) {
-      try {
-        const { data, error } = await supabase
-          .from('auctions')
-          .select('*')
-          .order('created_at', { ascending: false });
-        
-        if (!error && data) {
-          dbAuctions = data;
-        }
-      } catch (error) {
-      }
+    if (!hasSupabaseCredentials()) return [];
+
+    try {
+      const events = await EventService.getAllEvents();
+      return events.map(EventService.normalizeEventForDisplay);
+    } catch (error) {
+      console.error('Error fetching events from Supabase:', error);
+      return [];
     }
-    
-    // Combine local events and database auctions
-    const combined = [...localEvents, ...dbAuctions];
-    return combined;
+  }
+
+  static async getPublishedAuctions(): Promise<any[]> {
+    if (!hasSupabaseCredentials()) return [];
+
+    try {
+      const events = await EventService.getPublishedEvents();
+      return events.map(EventService.normalizeEventForDisplay);
+    } catch (error) {
+      console.error('Error fetching published events:', error);
+      return [];
+    }
   }
 }

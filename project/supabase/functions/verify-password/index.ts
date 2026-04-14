@@ -62,8 +62,6 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    await supabase.auth.signOut();
-
     return new Response(
       JSON.stringify({ success: true, valid: true }),
       {

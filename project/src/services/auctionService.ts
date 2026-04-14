@@ -1,4 +1,5 @@
 import { Auction, Bid } from '../types/auction';
+import { generateUUID } from '../utils/formatters';
 
 interface CreateAuctionData {
   title: string;
@@ -44,7 +45,7 @@ export class AuctionService {
     const auctions = this.getAuctions();
 
     const newAuction: Auction = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       title: auctionData.title,
       description: auctionData.description,
       starting_price: auctionData.starting_price,
@@ -85,7 +86,7 @@ export class AuctionService {
 
     const bids = this.getBidsFromStorage();
     bids.push({
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       auction_id: auctionId,
       bidder_id: 'anonymous',
       amount,

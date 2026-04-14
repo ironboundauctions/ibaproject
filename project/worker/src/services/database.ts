@@ -158,6 +158,7 @@ export class DatabaseService {
       durationSeconds?: number;
       b2Key?: string;
       displayOrder?: number;
+      itemId?: string;
     }
   ): Promise<string> {
     const result = await this.pool.query<{ id: string }>(
@@ -177,7 +178,7 @@ export class DatabaseService {
       SELECT
         $1::uuid,
         $2::text,
-        COALESCE(src.item_id, NULL),
+        COALESCE($9::uuid, src.item_id),
         $3::text,
         $4::text,
         $5::integer,
@@ -210,6 +211,7 @@ export class DatabaseService {
         metadata.height || null,
         metadata.durationSeconds || null,
         metadata.displayOrder ?? 0,
+        metadata.itemId || null,
       ]
     );
 

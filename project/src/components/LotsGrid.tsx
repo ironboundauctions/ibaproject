@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Edit, Trash2, Eye, DollarSign, User } from 'lucide-react';
+import { CreditCard as Edit, Trash2, Eye, DollarSign, User } from 'lucide-react';
 import { AdminService } from '../services/adminService';
 import { formatCurrency } from '../utils/formatters';
 
@@ -168,7 +168,7 @@ export default function LotsGrid({ auctionId, onEditLot }: LotsGridProps) {
                 </div>
               </div>
 
-              {/* Consigner */}
+              {/* Consignor */}
               {lot.consigner && (
                 <div className="flex items-center space-x-2 mb-3 text-sm text-ironbound-grey-600">
                   <User className="h-4 w-4" />

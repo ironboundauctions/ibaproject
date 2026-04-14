@@ -113,10 +113,10 @@ export default function AdvancedFilters({ categories, consigners, onFilterChange
               </div>
             </div>
 
-            {/* Consigner Filter */}
+            {/* Consignor Filter */}
             <div>
               <label className="block text-sm font-medium text-ironbound-grey-700 mb-3">
-                Consigner
+                Consignor
               </label>
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {consigners.map((consigner) => (

@@ -1,83 +1,83 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, User, Building, Mail, MapPin, Phone } from 'lucide-react';
-import { Consigner } from '../types/consigner';
-import { ConsignerService } from '../services/consignerService';
-import ConsignerForm from './ConsignerForm';
+import { Plus, Search, CreditCard as Edit, Trash2, User, Building, Mail, MapPin, Phone } from 'lucide-react';
+import { Consignor } from '../types/consigner';
+import { ConsignorService } from '../services/consignerService';
+import ConsignorForm from './ConsignerForm';
 
-interface ConsignerManagementProps {
-  onConsignerSelect?: (consigner: Consigner) => void;
+interface ConsignorManagementProps {
+  onConsignorSelect?: (consignor: Consignor) => void;
 }
 
-export default function ConsignerManagement({ onConsignerSelect }: ConsignerManagementProps) {
-  const [consigners, setConsigners] = useState<Consigner[]>([]);
-  const [filteredConsigners, setFilteredConsigners] = useState<Consigner[]>([]);
+export default function ConsignorManagement({ onConsignorSelect }: ConsignorManagementProps) {
+  const [consignors, setConsignors] = useState<Consignor[]>([]);
+  const [filteredConsignors, setFilteredConsignors] = useState<Consignor[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
-  const [selectedConsigner, setSelectedConsigner] = useState<Consigner | null>(null);
+  const [selectedConsignor, setSelectedConsignor] = useState<Consignor | null>(null);
 
   useEffect(() => {
-    const fetchConsigners = async () => {
+    const fetchConsignors = async () => {
       try {
-        const consignersData = await ConsignerService.getConsigners();
-        setConsigners(consignersData);
-        setFilteredConsigners(consignersData);
+        const consignorsData = await ConsignorService.getConsignors();
+        setConsignors(consignorsData);
+        setFilteredConsignors(consignorsData);
       } catch (error) {
-        console.error('Error fetching consigners:', error);
+        console.error('Error fetching consignors:', error);
       } finally {
         setIsLoading(false);
       }
     };
 
-    fetchConsigners();
+    fetchConsignors();
   }, []);
 
   useEffect(() => {
-    const filtered = consigners.filter(consigner =>
-      consigner.customer_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      consigner.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (consigner.company && consigner.company.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      consigner.email?.toLowerCase().includes(searchQuery.toLowerCase())
+    const filtered = consignors.filter(consignor =>
+      consignor.customer_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      consignor.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (consignor.company && consignor.company.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      consignor.email?.toLowerCase().includes(searchQuery.toLowerCase())
     );
-    setFilteredConsigners(filtered);
-  }, [consigners, searchQuery]);
+    setFilteredConsignors(filtered);
+  }, [consignors, searchQuery]);
 
-  const handleCreateConsigner = () => {
-    setSelectedConsigner(null);
+  const handleCreateConsignor = () => {
+    setSelectedConsignor(null);
     setShowForm(true);
   };
 
-  const handleEditConsigner = (consigner: Consigner) => {
-    setSelectedConsigner(consigner);
+  const handleEditConsignor = (consignor: Consignor) => {
+    setSelectedConsignor(consignor);
     setShowForm(true);
   };
 
-  const handleDeleteConsigner = async (consigner: Consigner) => {
-    if (!confirm(`Are you sure you want to delete consigner ${consigner.customer_number} (${consigner.full_name})?`)) {
+  const handleDeleteConsignor = async (consignor: Consignor) => {
+    if (!confirm(`Are you sure you want to delete consignor ${consignor.customer_number} (${consignor.full_name})?`)) {
       return;
     }
 
     try {
-      await ConsignerService.deleteConsigner(consigner.id);
-      setConsigners(prev => prev.filter(c => c.id !== consigner.id));
+      await ConsignorService.deleteConsignor(consignor.id);
+      setConsignors(prev => prev.filter(c => c.id !== consignor.id));
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to delete consigner');
+      alert(error instanceof Error ? error.message : 'Failed to delete consignor');
     }
   };
 
-  const handleFormSubmit = async (consignerData: any) => {
+  const handleFormSubmit = async (consignorData: any) => {
     try {
-      if (selectedConsigner) {
-        const updatedConsigner = await ConsignerService.updateConsigner(selectedConsigner.id, consignerData);
-        setConsigners(prev => prev.map(c => c.id === selectedConsigner.id ? updatedConsigner : c));
+      if (selectedConsignor) {
+        const updatedConsignor = await ConsignorService.updateConsignor(selectedConsignor.id, consignorData);
+        setConsignors(prev => prev.map(c => c.id === selectedConsignor.id ? updatedConsignor : c));
       } else {
-        const newConsigner = await ConsignerService.createConsigner(consignerData);
-        setConsigners(prev => [newConsigner, ...prev]);
+        const newConsignor = await ConsignorService.createConsignor(consignorData);
+        setConsignors(prev => [newConsignor, ...prev]);
       }
       setShowForm(false);
-      setSelectedConsigner(null);
+      setSelectedConsignor(null);
     } catch (error) {
-      throw error; // Let the form handle the error display
+      throw error;
     }
   };
 
@@ -86,7 +86,7 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
       <div className="bg-white rounded-xl shadow-md p-6">
         <div className="text-center py-8">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-ironbound-orange-500 mx-auto mb-4"></div>
-          <p className="text-ironbound-grey-500">Loading consigners...</p>
+          <p className="text-ironbound-grey-500">Loading consignors...</p>
         </div>
       </div>
     );
@@ -94,12 +94,12 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
 
   if (showForm) {
     return (
-      <ConsignerForm
-        consigner={selectedConsigner}
+      <ConsignorForm
+        consignor={selectedConsignor}
         onSubmit={handleFormSubmit}
         onCancel={() => {
           setShowForm(false);
-          setSelectedConsigner(null);
+          setSelectedConsignor(null);
         }}
       />
     );
@@ -110,15 +110,15 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-white">Consigner Management</h2>
-          <p className="text-ironbound-grey-200">Manage consigners and their information</p>
+          <h2 className="text-2xl font-bold text-white">Consignor Management</h2>
+          <p className="text-ironbound-grey-200">Manage consignors and their information</p>
         </div>
         <button
-          onClick={handleCreateConsigner}
+          onClick={handleCreateConsignor}
           className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
         >
           <Plus className="h-4 w-4" />
-          <span>Add Consigner</span>
+          <span>Add Consignor</span>
         </button>
       </div>
 
@@ -136,28 +136,28 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
         </div>
       </div>
 
-      {/* Consigners List */}
+      {/* Consignors List */}
       <div className="bg-white rounded-xl shadow-md overflow-hidden">
-        {filteredConsigners.length === 0 ? (
+        {filteredConsignors.length === 0 ? (
           <div className="text-center py-12">
             <div className="bg-ironbound-grey-100 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
               <User className="h-8 w-8 text-ironbound-grey-400" />
             </div>
             <h3 className="text-lg font-semibold text-ironbound-grey-900 mb-2">
-              {searchQuery ? 'No consigners found' : 'No consigners yet'}
+              {searchQuery ? 'No consignors found' : 'No consignors yet'}
             </h3>
             <p className="text-ironbound-grey-600 mb-4">
-              {searchQuery 
+              {searchQuery
                 ? 'Try adjusting your search criteria'
-                : 'Start by adding your first consigner to the system'
+                : 'Start by adding your first consignor to the system'
               }
             </p>
             {!searchQuery && (
               <button
-                onClick={handleCreateConsigner}
+                onClick={handleCreateConsignor}
                 className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-6 py-2 rounded-lg font-medium transition-colors"
               >
-                Add First Consigner
+                Add First Consignor
               </button>
             )}
           </div>
@@ -170,7 +170,7 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
                     Customer #
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
-                    Consigner
+                    Consignor
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-ironbound-grey-500 uppercase tracking-wider">
                     Contact
@@ -187,15 +187,15 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-ironbound-grey-200">
-                {filteredConsigners.map((consigner) => (
-                  <tr 
-                    key={consigner.id} 
+                {filteredConsignors.map((consignor) => (
+                  <tr
+                    key={consignor.id}
                     className="hover:bg-ironbound-grey-50 cursor-pointer"
-                    onClick={() => onConsignerSelect?.(consigner)}
+                    onClick={() => onConsignorSelect?.(consignor)}
                   >
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-bold text-ironbound-orange-600">
-                        {consigner.customer_number}
+                        {consignor.customer_number}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -205,15 +205,15 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
                         </div>
                         <div>
                           <div className="text-sm font-medium text-ironbound-grey-900">
-                            {consigner.full_name}
-                            {consigner.nickname && (
-                              <span className="text-ironbound-orange-600 ml-2">"{consigner.nickname}"</span>
+                            {consignor.full_name}
+                            {consignor.nickname && (
+                              <span className="text-ironbound-orange-600 ml-2">"{consignor.nickname}"</span>
                             )}
                           </div>
-                          {consigner.company && (
+                          {consignor.company && (
                             <div className="text-sm text-ironbound-grey-500 flex items-center">
                               <Building className="h-3 w-3 mr-1" />
-                              {consigner.company}
+                              {consignor.company}
                             </div>
                           )}
                         </div>
@@ -222,50 +222,50 @@ export default function ConsignerManagement({ onConsignerSelect }: ConsignerMana
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-ironbound-grey-900 flex items-center mb-1">
                         <Mail className="h-3 w-3 mr-1 text-ironbound-grey-400" />
-                        {consigner.email || 'No email'}
+                        {consignor.email || 'No email'}
                       </div>
-                      {consigner.phone && (
+                      {consignor.phone && (
                         <div className="text-sm text-ironbound-grey-500 flex items-center mb-1">
                           <Phone className="h-3 w-3 mr-1 text-ironbound-grey-400" />
-                          {consigner.phone}
+                          {consignor.phone}
                         </div>
                       )}
                       <div className="text-sm text-ironbound-grey-500 flex items-center">
                         <MapPin className="h-3 w-3 mr-1 text-ironbound-grey-400" />
-                        {consigner.address}
+                        {consignor.address}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center text-sm">
                         <span className="text-ironbound-grey-400 mr-1">#</span>
-                        <span className="font-medium text-ironbound-grey-900">{consigner.active_items}</span>
+                        <span className="font-medium text-ironbound-grey-900">{consignor.active_items}</span>
                         <span className="text-ironbound-grey-500 mx-1">/</span>
-                        <span className="text-ironbound-grey-500">{consigner.total_items}</span>
+                        <span className="text-ironbound-grey-500">{consignor.total_items}</span>
                       </div>
                       <div className="text-xs text-ironbound-grey-500">Active / Total</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-ironbound-grey-500">
-                      {new Date(consigner.created_at).toLocaleDateString()}
+                      {new Date(consignor.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex items-center justify-end space-x-2">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleEditConsigner(consigner);
+                            handleEditConsignor(consignor);
                           }}
                           className="text-ironbound-orange-600 hover:text-ironbound-orange-900 transition-colors p-1"
-                          title="Edit Consigner"
+                          title="Edit Consignor"
                         >
                           <Edit className="h-4 w-4" />
                         </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleDeleteConsigner(consigner);
+                            handleDeleteConsignor(consignor);
                           }}
                           className="text-red-600 hover:text-red-900 transition-colors p-1"
-                          title="Delete Consigner"
+                          title="Delete Consignor"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
