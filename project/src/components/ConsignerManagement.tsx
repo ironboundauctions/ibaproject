@@ -3,9 +3,20 @@ import { Plus, Search, CreditCard as Edit, Trash2, User, Building, Mail, MapPin,
 import { Consignor } from '../types/consigner';
 import { ConsignorService } from '../services/consignerService';
 import ConsignorForm from './ConsignerForm';
+import ConfirmDialog from './ConfirmDialog';
 
 interface ConsignorManagementProps {
   onConsignorSelect?: (consignor: Consignor) => void;
+}
+
+interface DialogState {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  variant: 'danger' | 'warning' | 'info' | 'success' | 'restore';
+  alertOnly?: boolean;
+  onConfirm: () => void;
 }
 
 export default function ConsignorManagement({ onConsignorSelect }: ConsignorManagementProps) {
@@ -15,6 +26,11 @@ export default function ConsignorManagement({ onConsignorSelect }: ConsignorMana
   const [searchQuery, setSearchQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [selectedConsignor, setSelectedConsignor] = useState<Consignor | null>(null);
+  const [dialog, setDialog] = useState<DialogState>({
+    isOpen: false, title: '', message: '', confirmLabel: 'OK', variant: 'danger', onConfirm: () => {},
+  });
+  const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+  const openDialog = (opts: Omit<DialogState, 'isOpen'>) => setDialog({ ...opts, isOpen: true });
 
   useEffect(() => {
     const fetchConsignors = async () => {
@@ -33,11 +49,15 @@ export default function ConsignorManagement({ onConsignorSelect }: ConsignorMana
   }, []);
 
   useEffect(() => {
+    const q = searchQuery.toLowerCase();
     const filtered = consignors.filter(consignor =>
-      consignor.customer_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      consignor.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (consignor.company && consignor.company.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      consignor.email?.toLowerCase().includes(searchQuery.toLowerCase())
+      consignor.customer_number?.toLowerCase().includes(q) ||
+      consignor.full_name?.toLowerCase().includes(q) ||
+      consignor.nickname?.toLowerCase().includes(q) ||
+      consignor.company?.toLowerCase().includes(q) ||
+      consignor.email?.toLowerCase().includes(q) ||
+      consignor.phone?.toLowerCase().includes(q) ||
+      consignor.address?.toLowerCase().includes(q)
     );
     setFilteredConsignors(filtered);
   }, [consignors, searchQuery]);
@@ -52,17 +72,29 @@ export default function ConsignorManagement({ onConsignorSelect }: ConsignorMana
     setShowForm(true);
   };
 
-  const handleDeleteConsignor = async (consignor: Consignor) => {
-    if (!confirm(`Are you sure you want to delete consignor ${consignor.customer_number} (${consignor.full_name})?`)) {
-      return;
-    }
-
-    try {
-      await ConsignorService.deleteConsignor(consignor.id);
-      setConsignors(prev => prev.filter(c => c.id !== consignor.id));
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to delete consignor');
-    }
+  const handleDeleteConsignor = (consignor: Consignor) => {
+    openDialog({
+      title: 'Delete Consignor',
+      message: `Are you sure you want to delete consignor ${consignor.customer_number} (${consignor.full_name})?`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+      onConfirm: async () => {
+        closeDialog();
+        try {
+          await ConsignorService.deleteConsignor(consignor.id);
+          setConsignors(prev => prev.filter(c => c.id !== consignor.id));
+        } catch (error) {
+          openDialog({
+            title: 'Error',
+            message: error instanceof Error ? error.message : 'Failed to delete consignor',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            alertOnly: true,
+            onConfirm: closeDialog,
+          });
+        }
+      },
+    });
   };
 
   const handleFormSubmit = async (consignorData: any) => {
@@ -106,6 +138,17 @@ export default function ConsignorManagement({ onConsignorSelect }: ConsignorMana
   }
 
   return (
+    <>
+    <ConfirmDialog
+      isOpen={dialog.isOpen}
+      title={dialog.title}
+      message={dialog.message}
+      confirmLabel={dialog.confirmLabel}
+      variant={dialog.variant}
+      alertOnly={dialog.alertOnly}
+      onConfirm={dialog.onConfirm}
+      onCancel={closeDialog}
+    />
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -131,7 +174,7 @@ export default function ConsignorManagement({ onConsignorSelect }: ConsignorMana
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search by customer number, name, company, or email..."
-            className="w-full pl-10 pr-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors"
+            className="w-full pl-10 pr-4 py-3 border border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-ironbound-orange-500 focus:border-ironbound-orange-500 transition-colors text-gray-900 placeholder-gray-400 bg-white"
           />
         </div>
       </div>
@@ -279,5 +322,6 @@ export default function ConsignorManagement({ onConsignorSelect }: ConsignorMana
         )}
       </div>
     </div>
+    </>
   );
 }

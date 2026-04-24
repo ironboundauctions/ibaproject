@@ -30,6 +30,7 @@ export interface CatalogLot {
   manufacturer: string | null;
   barcode_asset_group_id: string | null;
   buyer_attention: string | null;
+  has_video: boolean;
   pre_bid: PreBid | null;
   pre_bid_count: number;
 }
@@ -92,6 +93,7 @@ export class PreBidService {
         manufacturer: item.manufacturer ?? null,
         barcode_asset_group_id: item.barcode_asset_group_id || null,
         buyer_attention: item.buyer_attention || null,
+        has_video: false,
         pre_bid: null,
         pre_bid_count: 0,
       };
@@ -107,21 +109,24 @@ export class PreBidService {
       .in('item_id', inventoryIds)
       .is('detached_at', null)
       .eq('published_status', 'published')
-      .in('variant', ['thumb', 'display'])
+      .in('variant', ['thumb', 'display', 'video'])
       .order('display_order', { ascending: true, nullsFirst: false });
 
     const barcodeGroupMap = new Map(lots.map(l => [l.inventory_id, l.barcode_asset_group_id]));
     const thumbMap: Record<string, string> = {};
     const displayMap: Record<string, string> = {};
+    const videoItemIds = new Set<string>();
     for (const file of files || []) {
       if (!file.cdn_url) continue;
       const barcodeGroupId = barcodeGroupMap.get(file.item_id);
       if (barcodeGroupId && file.asset_group_id === barcodeGroupId) continue;
       if (file.variant === 'thumb' && !thumbMap[file.item_id]) thumbMap[file.item_id] = file.cdn_url;
       else if (file.variant === 'display' && !displayMap[file.item_id]) displayMap[file.item_id] = file.cdn_url;
+      else if (file.variant === 'video') videoItemIds.add(file.item_id);
     }
     lots.forEach(lot => {
       lot.image_url = thumbMap[lot.inventory_id] || displayMap[lot.inventory_id] || lot.image_url || '';
+      lot.has_video = videoItemIds.has(lot.inventory_id);
     });
 
     const assignmentIds = lots.map(l => l.assignment_id);

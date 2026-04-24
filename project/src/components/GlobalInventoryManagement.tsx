@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X, Upload, Gavel, Info } from 'lucide-react';
+import { Plus, Search, CreditCard as Edit, Trash2, Package, Image as ImageIcon, ArrowUpDown, Check, X, Upload, Gavel, Info, Play, Film } from 'lucide-react';
 import { InventoryService, InventoryItem } from '../services/inventoryService';
 import { ConsignorService } from '../services/consignerService';
 import { Consignor } from '../types/consigner';
@@ -7,11 +7,23 @@ import InventoryItemFormNew from './InventoryItemFormNew';
 import ImageGalleryModal from './ImageGalleryModal';
 import BulkActions from './BulkActions';
 import BulkUploadModal from './BulkUploadModal';
+import BulkVideoUploadModal from './BulkVideoUploadModal';
 import AdvancedFilters, { FilterState } from './AdvancedFilters';
 import AssignToEventModal from './AssignToEventModal';
 import InventoryItemDetail from './InventoryItemDetail';
+import ConfirmDialog from './ConfirmDialog';
 import { formatCurrency, EQUIPMENT_CATEGORIES } from '../utils/formatters';
 import { supabase } from '../lib/supabase';
+
+interface DialogState {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  detail?: string;
+  confirmLabel: string;
+  variant: 'danger' | 'warning' | 'info';
+  onConfirm: () => void;
+}
 
 export default function GlobalInventoryManagement() {
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -32,6 +44,7 @@ export default function GlobalInventoryManagement() {
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [fileCountsByItemId, setFileCountsByItemId] = useState<Record<string, number>>({});
   const [cdnThumbnailsByItemId, setCdnThumbnailsByItemId] = useState<Record<string, string>>({});
+  const [videoItemIds, setVideoItemIds] = useState<Set<string>>(new Set());
   const [advancedFilters, setAdvancedFilters] = useState<FilterState>({
     categories: [],
     consignerIds: [],
@@ -42,9 +55,25 @@ export default function GlobalInventoryManagement() {
   });
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   const [bulkUploadItemId, setBulkUploadItemId] = useState<string | null>(null);
+  const [showBulkVideoUpload, setShowBulkVideoUpload] = useState(false);
   const [assignToEventItem, setAssignToEventItem] = useState<InventoryItem | null>(null);
+  const [bulkAssignToEventItems, setBulkAssignToEventItems] = useState<InventoryItem[] | null>(null);
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
   const [eventNumbersByItemId, setEventNumbersByItemId] = useState<Record<string, string[]>>({});
+  const [dialog, setDialog] = useState<DialogState>({
+    isOpen: false,
+    title: '',
+    message: '',
+    detail: undefined,
+    confirmLabel: 'Confirm',
+    variant: 'danger',
+    onConfirm: () => {},
+  });
+
+  const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+
+  const openDialog = (opts: Omit<DialogState, 'isOpen'>) =>
+    setDialog({ ...opts, isOpen: true });
 
   useEffect(() => {
     fetchData();
@@ -87,7 +116,7 @@ export default function GlobalInventoryManagement() {
           .from('auction_files')
           .select('item_id, cdn_url, variant, display_order, asset_group_id')
           .in('item_id', itemIds)
-          .in('variant', ['source', 'thumb'])
+          .in('variant', ['source', 'thumb', 'video'])
           .eq('published_status', 'published')
           .is('detached_at', null)
           .order('display_order', { ascending: true });
@@ -95,6 +124,7 @@ export default function GlobalInventoryManagement() {
         if (!filesError && allFiles) {
           const fileCounts: Record<string, number> = {};
           const thumbnails: Record<string, string> = {};
+          const videoIds = new Set<string>();
 
           // Create a map of item barcode asset group IDs for filtering
           const barcodeAssetGroupIds = new Map(
@@ -109,11 +139,14 @@ export default function GlobalInventoryManagement() {
               fileCounts[file.item_id] = (fileCounts[file.item_id] || 0) + 1;
             } else if (file.variant === 'thumb' && !thumbnails[file.item_id] && !isBarcode) {
               thumbnails[file.item_id] = file.cdn_url;
+            } else if (file.variant === 'video' && !isBarcode) {
+              videoIds.add(file.item_id);
             }
           });
 
           setFileCountsByItemId(fileCounts);
           setCdnThumbnailsByItemId(thumbnails);
+          setVideoItemIds(videoIds);
         }
       }
     } catch (error) {
@@ -191,23 +224,62 @@ export default function GlobalInventoryManagement() {
 
       if (assignments.length > 0) {
         const eventNames = assignments.map(a => a.event?.title || 'Unknown Event').join(', ');
-        const confirmed = confirm(
-          `Item ${item.inventory_number} is currently assigned to ${assignments.length} event${assignments.length > 1 ? 's' : ''}: ${eventNames}.\n\nDeleting this item will automatically remove it from those events. Do you want to continue?`
-        );
-        if (!confirmed) return;
-
-        await InventoryService.removeAllEventAssignments(item.id);
+        openDialog({
+          title: 'Item Assigned to Events',
+          message: `Item #${item.inventory_number} is currently assigned to ${assignments.length} event${assignments.length > 1 ? 's' : ''}: ${eventNames}.`,
+          detail: 'Deleting this item will automatically remove it from those events. This action cannot be undone.',
+          confirmLabel: 'Delete Anyway',
+          variant: 'warning',
+          onConfirm: async () => {
+            closeDialog();
+            try {
+              await InventoryService.removeAllEventAssignments(item.id);
+              await InventoryService.deleteItem(item.id);
+              setItems(prev => prev.filter(i => i.id !== item.id));
+              setEventNumbersByItemId(prev => { const next = { ...prev }; delete next[item.id]; return next; });
+            } catch (err) {
+              openDialog({
+                title: 'Error',
+                message: err instanceof Error ? err.message : 'Failed to delete item',
+                confirmLabel: 'OK',
+                variant: 'danger',
+                onConfirm: closeDialog,
+              });
+            }
+          },
+        });
       } else {
-        if (!confirm(`Are you sure you want to delete item ${item.inventory_number}?`)) {
-          return;
-        }
+        openDialog({
+          title: 'Delete Item',
+          message: `Are you sure you want to delete item #${item.inventory_number}? It will be moved to Recently Removed Items where it can be restored or permanently deleted.`,
+          confirmLabel: 'Delete',
+          variant: 'danger',
+          onConfirm: async () => {
+            closeDialog();
+            try {
+              await InventoryService.deleteItem(item.id);
+              setItems(prev => prev.filter(i => i.id !== item.id));
+              setEventNumbersByItemId(prev => { const next = { ...prev }; delete next[item.id]; return next; });
+            } catch (err) {
+              openDialog({
+                title: 'Error',
+                message: err instanceof Error ? err.message : 'Failed to delete item',
+                confirmLabel: 'OK',
+                variant: 'danger',
+                onConfirm: closeDialog,
+              });
+            }
+          },
+        });
       }
-
-      await InventoryService.deleteItem(item.id);
-      setItems(prev => prev.filter(i => i.id !== item.id));
-      setEventNumbersByItemId(prev => { const next = { ...prev }; delete next[item.id]; return next; });
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to delete item');
+      openDialog({
+        title: 'Error',
+        message: error instanceof Error ? error.message : 'Failed to delete item',
+        confirmLabel: 'OK',
+        variant: 'danger',
+        onConfirm: closeDialog,
+      });
     }
   };
 
@@ -340,50 +412,87 @@ export default function GlobalInventoryManagement() {
 
       const assignedCount = assignmentChecks.filter(a => a.length > 0).length;
 
-      if (assignedCount > 0) {
-        const confirmed = confirm(
-          `${assignedCount} of the ${ids.length} selected items are currently assigned to events.\n\nDeleting them will automatically remove those event assignments. Do you want to continue?`
-        );
-        if (!confirmed) return;
-
-        await Promise.all(
-          ids.map((id, i) => assignmentChecks[i].length > 0 ? InventoryService.removeAllEventAssignments(id) : Promise.resolve())
-        );
-      } else {
-        if (!confirm(`Are you sure you want to delete ${selectedItems.size} items? This action cannot be undone.`)) {
-          return;
+      const doDelete = async (checks: typeof assignmentChecks) => {
+        closeDialog();
+        try {
+          await Promise.all(
+            ids.map((id, i) => checks[i].length > 0 ? InventoryService.removeAllEventAssignments(id) : Promise.resolve())
+          );
+          await Promise.all(ids.map(id => InventoryService.deleteItem(id)));
+          setItems(prev => prev.filter(item => !selectedItems.has(item.id)));
+          setEventNumbersByItemId(prev => { const next = { ...prev }; ids.forEach(id => delete next[id]); return next; });
+          setSelectedItems(new Set());
+        } catch (err) {
+          openDialog({
+            title: 'Error',
+            message: err instanceof Error ? err.message : 'Failed to delete items',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            onConfirm: closeDialog,
+          });
         }
-      }
+      };
 
-      await Promise.all(ids.map(id => InventoryService.deleteItem(id)));
-      setItems(prev => prev.filter(item => !selectedItems.has(item.id)));
-      setEventNumbersByItemId(prev => { const next = { ...prev }; ids.forEach(id => delete next[id]); return next; });
-      setSelectedItems(new Set());
+      if (assignedCount > 0) {
+        openDialog({
+          title: 'Items Assigned to Events',
+          message: `${assignedCount} of the ${ids.length} selected items are currently assigned to events.`,
+          detail: 'Deleting them will automatically remove those event assignments. This action cannot be undone.',
+          confirmLabel: `Delete ${ids.length > 1 ? `${ids.length} Items` : 'Item'}`,
+          variant: 'warning',
+          onConfirm: () => doDelete(assignmentChecks),
+        });
+      } else {
+        openDialog({
+          title: 'Delete Items',
+          message: `Are you sure you want to delete ${selectedItems.size} item${selectedItems.size > 1 ? 's' : ''}? They will be moved to Recently Removed Items where they can be restored or permanently deleted.`,
+          confirmLabel: `Delete ${ids.length > 1 ? `${ids.length} Items` : 'Item'}`,
+          variant: 'danger',
+          onConfirm: () => doDelete(assignmentChecks),
+        });
+      }
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to delete items');
+      openDialog({
+        title: 'Error',
+        message: error instanceof Error ? error.message : 'Failed to delete items',
+        confirmLabel: 'OK',
+        variant: 'danger',
+        onConfirm: closeDialog,
+      });
     }
   };
 
   const handleBulkStatusChange = async (newStatus: string) => {
-    if (!confirm(`Change status of ${selectedItems.size} items to "${newStatus}"?`)) {
-      return;
-    }
-
-    try {
-      await Promise.all(
-        Array.from(selectedItems).map(id =>
-          InventoryService.updateItem(id, { status: newStatus })
-        )
-      );
-      setItems(prev =>
-        prev.map(item =>
-          selectedItems.has(item.id) ? { ...item, status: newStatus } : item
-        )
-      );
-      setSelectedItems(new Set());
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to update items');
-    }
+    openDialog({
+      title: 'Update Status',
+      message: `Change status of ${selectedItems.size} item${selectedItems.size > 1 ? 's' : ''} to "${newStatus}"?`,
+      confirmLabel: 'Update',
+      variant: 'info',
+      onConfirm: async () => {
+        closeDialog();
+        try {
+          await Promise.all(
+            Array.from(selectedItems).map(id =>
+              InventoryService.updateItem(id, { status: newStatus })
+            )
+          );
+          setItems(prev =>
+            prev.map(item =>
+              selectedItems.has(item.id) ? { ...item, status: newStatus } : item
+            )
+          );
+          setSelectedItems(new Set());
+        } catch (error) {
+          openDialog({
+            title: 'Error',
+            message: error instanceof Error ? error.message : 'Failed to update items',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            onConfirm: closeDialog,
+          });
+        }
+      },
+    });
   };
 
   const handleBulkExport = () => {
@@ -535,6 +644,13 @@ export default function GlobalInventoryManagement() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowBulkVideoUpload(true)}
+            className="bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
+          >
+            <Film className="h-4 w-4" />
+            <span>Bulk Add Videos</span>
+          </button>
           <button
             onClick={() => setShowBulkUpload(true)}
             className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
@@ -708,18 +824,11 @@ export default function GlobalInventoryManagement() {
                               </div>
                             );
                           })()}
-                          {(() => {
-                            const fileCount = fileCountsByItemId[item.id] || 0;
-
-                            if (fileCount > 0) {
-                              return (
-                                <div className="absolute bottom-0 right-0 bg-ironbound-orange-500 text-white text-xs px-1.5 py-0.5 rounded-tl font-medium">
-                                  {fileCount}
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
+                          {videoItemIds.has(item.id) && (
+                            <div className="absolute bottom-0 right-0 bg-black/70 rounded-tl-md p-0.5">
+                              <Play className="h-2.5 w-2.5 text-white fill-white" />
+                            </div>
+                          )}
                         </button>
                         <div className="absolute hidden group-hover:block bottom-full left-0 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap z-10">
                           Click to view gallery
@@ -896,6 +1005,10 @@ export default function GlobalInventoryManagement() {
         onBulkDelete={handleBulkDelete}
         onBulkExport={handleBulkExport}
         onBulkStatusChange={handleBulkStatusChange}
+        onBulkAssignToEvent={() => {
+          const selected = items.filter(i => selectedItems.has(i.id));
+          if (selected.length > 0) setBulkAssignToEventItems(selected);
+        }}
       />
 
       {showBulkUpload && (
@@ -911,6 +1024,28 @@ export default function GlobalInventoryManagement() {
           }}
         />
       )}
+
+      {showBulkVideoUpload && (
+        <BulkVideoUploadModal
+          isOpen={showBulkVideoUpload}
+          onClose={() => setShowBulkVideoUpload(false)}
+          onSuccess={() => {
+            fetchData();
+          }}
+          items={items}
+        />
+      )}
+
+      <ConfirmDialog
+        isOpen={dialog.isOpen}
+        title={dialog.title}
+        message={dialog.message}
+        detail={dialog.detail}
+        confirmLabel={dialog.confirmLabel}
+        variant={dialog.variant}
+        onConfirm={dialog.onConfirm}
+        onCancel={closeDialog}
+      />
 
       {assignToEventItem && (
         <AssignToEventModal
@@ -935,6 +1070,35 @@ export default function GlobalInventoryManagement() {
                 ...prev,
                 [assignToEventItem.id]: [...(prev[assignToEventItem.id] || []).filter(n => n !== eventRow.event_number), eventRow.event_number],
               }));
+            }
+          }}
+        />
+      )}
+
+      {bulkAssignToEventItems && (
+        <AssignToEventModal
+          items={bulkAssignToEventItems}
+          onClose={() => setBulkAssignToEventItems(null)}
+          onAssigned={async (eventId) => {
+            setBulkAssignToEventItems(null);
+            setSelectedItems(new Set());
+            const assignedIds = new Set(bulkAssignToEventItems.map(i => i.id));
+            setItems(prev =>
+              prev.map(i => assignedIds.has(i.id) ? { ...i, status: 'assigned_to_auction' } : i)
+            );
+            const { data: eventRow } = await supabase
+              .from('auction_events')
+              .select('event_number')
+              .eq('id', eventId)
+              .maybeSingle();
+            if (eventRow?.event_number) {
+              setEventNumbersByItemId(prev => {
+                const updated = { ...prev };
+                bulkAssignToEventItems.forEach(i => {
+                  updated[i.id] = [...(prev[i.id] || []).filter(n => n !== eventRow.event_number), eventRow.event_number];
+                });
+                return updated;
+              });
             }
           }}
         />

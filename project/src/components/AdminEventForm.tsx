@@ -1,8 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { generateUUID } from '../utils/formatters';
-import { Calendar, MapPin, User, Gavel, AlertCircle, Image, FileText, Percent, Clock, Globe, Upload, X, Loader, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Calendar, MapPin, User, Gavel, AlertCircle, Image, FileText, Percent, Clock, Globe, Upload, X, Loader, ToggleLeft, ToggleRight, AlertTriangle } from 'lucide-react';
 import { AuctionEvent } from '../types/auction';
 import { uploadEventImage } from '../services/fileUploadService';
+import { LiveClerkService } from '../services/liveClerkService';
 
 interface AdminEventFormProps {
   event?: AuctionEvent;
@@ -17,6 +18,10 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
   const [imagePreview, setImagePreview] = useState<string>(event?.main_image_url || '');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingEventIdRef = useRef<string>(event?.id || generateUUID());
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
 
   // Helper function to format date for datetime-local input
   const formatDateForInput = (dateString: string): string => {
@@ -152,6 +157,22 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
       ...prev,
       [name]: value
     }));
+  };
+
+  const handleReset = async () => {
+    if (!event?.id || resetConfirmText !== 'RESET') return;
+    setIsResetting(true);
+    try {
+      await LiveClerkService.resetAuctionActivity(event.id);
+      setResetSuccess(true);
+      setShowResetModal(false);
+      setResetConfirmText('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset auction activity');
+      setShowResetModal(false);
+    } finally {
+      setIsResetting(false);
+    }
   };
 
   return (
@@ -639,27 +660,122 @@ export default function AdminEventForm({ event, onSubmit, onCancel }: AdminEvent
         </div>
 
         {/* Submit Buttons */}
-        <div className="flex space-x-4 pt-8 border-t border-ironbound-grey-200">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="flex-1 px-6 py-3 border border-ironbound-grey-300 text-ironbound-grey-700 rounded-lg hover:bg-ironbound-grey-50 transition-colors font-medium"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="flex-1 bg-ironbound-orange-500 hover:bg-ironbound-orange-600 disabled:bg-ironbound-grey-300 text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center justify-center"
-          >
-            {isLoading ? (
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-            ) : (
-              event ? 'Save Event Changes' : 'Create Auction Event'
-            )}
-          </button>
+        <div className="pt-8 border-t border-ironbound-grey-200 space-y-4">
+          <div className="flex space-x-4">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex-1 px-6 py-3 border border-ironbound-grey-300 text-ironbound-grey-700 rounded-lg hover:bg-ironbound-grey-50 transition-colors font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="flex-1 bg-ironbound-orange-500 hover:bg-ironbound-orange-600 disabled:bg-ironbound-grey-300 text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center justify-center"
+            >
+              {isLoading ? (
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+              ) : (
+                event ? 'Save Event Changes' : 'Create Auction Event'
+              )}
+            </button>
+          </div>
+
+          {event && (
+            <div className="border-2 border-red-200 rounded-xl overflow-hidden">
+              <div className="bg-red-50 px-5 py-3 flex items-center gap-2 border-b border-red-200">
+                <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0" />
+                <span className="text-xs font-bold text-red-600 uppercase tracking-widest">Danger Zone</span>
+              </div>
+              <div className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white">
+                <div>
+                  <p className="text-sm font-semibold text-ironbound-grey-900">Reset All Auction Activity</p>
+                  <p className="text-xs text-ironbound-grey-500 mt-1 leading-relaxed">
+                    Clears all bidding history, lot results, pre-bids, and live session data.
+                    Event settings, items, and images are <strong>not</strong> affected.
+                  </p>
+                  {resetSuccess && (
+                    <p className="mt-2 text-xs text-green-700 font-semibold">Auction activity reset successfully.</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setShowResetModal(true); setResetConfirmText(''); setResetSuccess(false); }}
+                  className="flex-shrink-0 flex items-center gap-2 px-5 py-2.5 bg-white border-2 border-red-400 text-red-600 font-semibold text-sm rounded-lg hover:bg-red-50 transition-colors"
+                >
+                  <AlertTriangle className="h-4 w-4" />
+                  Reset Auction Activity
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </form>
+
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-7">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                <AlertTriangle className="h-5 w-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-ironbound-grey-900">Reset Auction Activity</h3>
+                <p className="text-xs text-ironbound-grey-500">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-5 space-y-1.5 text-sm text-red-700">
+              <p className="font-semibold">The following will be permanently deleted:</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li>All live auction sessions and state</li>
+                <li>Complete bidding history log</li>
+                <li>All lot results (sold, passed, etc.)</li>
+                <li>All pre-bids placed by online bidders</li>
+                <li>All lot published flags (lots will be unpublished)</li>
+              </ul>
+              <p className="font-semibold mt-2">Items, images, and event settings are NOT affected.</p>
+            </div>
+
+            <div className="mb-5">
+              <label className="block text-sm font-semibold text-ironbound-grey-700 mb-2">
+                Type <span className="font-mono bg-ironbound-grey-100 px-1.5 py-0.5 rounded text-red-700">RESET</span> to confirm
+              </label>
+              <input
+                type="text"
+                value={resetConfirmText}
+                onChange={e => setResetConfirmText(e.target.value)}
+                placeholder="RESET"
+                autoFocus
+                className="w-full px-4 py-3 border-2 border-ironbound-grey-300 rounded-lg focus:ring-2 focus:ring-red-400 focus:border-red-400 text-ironbound-grey-900 font-mono tracking-widest transition-colors bg-white"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => { setShowResetModal(false); setResetConfirmText(''); }}
+                className="flex-1 px-4 py-2.5 border border-ironbound-grey-300 text-ironbound-grey-700 rounded-lg font-medium hover:bg-ironbound-grey-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={resetConfirmText !== 'RESET' || isResetting}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 disabled:bg-ironbound-grey-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+              >
+                {isResetting ? (
+                  <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Resetting...</>
+                ) : (
+                  'Reset All Activity'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

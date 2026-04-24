@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Trash2, RotateCcw, AlertTriangle, Package, Image as ImageIcon, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import ConfirmDialog from './ConfirmDialog';
 
 interface RemovedItem {
   id: string;
@@ -22,6 +23,17 @@ interface DeletionProgress {
   error?: string;
 }
 
+interface DialogState {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  detail?: string;
+  confirmLabel: string;
+  variant: 'danger' | 'warning' | 'info' | 'success' | 'restore';
+  alertOnly?: boolean;
+  onConfirm: () => void;
+}
+
 export function RecentlyRemovedItems() {
   const [items, setItems] = useState<RemovedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +41,17 @@ export function RecentlyRemovedItems() {
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [deletionProgress, setDeletionProgress] = useState<DeletionProgress[]>([]);
   const [showProgressModal, setShowProgressModal] = useState(false);
+  const [dialog, setDialog] = useState<DialogState>({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmLabel: 'OK',
+    variant: 'danger',
+    onConfirm: () => {},
+  });
+
+  const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+  const openDialog = (opts: Omit<DialogState, 'isOpen'>) => setDialog({ ...opts, isOpen: true });
 
   useEffect(() => {
     fetchRemovedItems();
@@ -56,7 +79,6 @@ export function RecentlyRemovedItems() {
 
       const itemsWithFiles = await Promise.all(
         (data || []).map(async (item) => {
-          // Get first thumb for display
           const { data: files } = await supabase
             .from('auction_files')
             .select('cdn_url, published_status, detached_at')
@@ -66,8 +88,6 @@ export function RecentlyRemovedItems() {
             .limit(1)
             .maybeSingle();
 
-          // Count unique asset groups (ALL files, including detached ones)
-          // When item is deleted, show total file count including individually-removed files
           const { data: assetGroups } = await supabase
             .from('auction_files')
             .select('asset_group_id')
@@ -105,24 +125,46 @@ export function RecentlyRemovedItems() {
   };
 
   const handleRestore = async (item: RemovedItem) => {
-    if (!confirm(`Restore item "${item.title}"?\n\nThis will restore the item to Global Inventory with its attached files.\n\nNote: Files that were individually removed before item deletion will NOT be restored.`)) {
-      return;
-    }
+    openDialog({
+      title: 'Restore Item',
+      message: `Restore "${item.title}" back to Global Inventory?`,
+      detail: 'Files that were individually removed before this item was deleted will not be restored.',
+      confirmLabel: 'Restore',
+      variant: 'restore',
+      onConfirm: async () => {
+        closeDialog();
+        try {
+          const { error } = await supabase
+            .from('inventory_items')
+            .update({ deleted_at: null })
+            .eq('id', item.id);
 
-    try {
-      const { error } = await supabase
-        .from('inventory_items')
-        .update({ deleted_at: null })
-        .eq('id', item.id);
+          if (error) throw error;
 
-      if (error) throw error;
-
-      alert('Item restored successfully!');
-      await fetchRemovedItems();
-    } catch (err) {
-      console.error('[RecentlyRemovedItems] Restore error:', err);
-      alert(err instanceof Error ? err.message : 'Failed to restore item');
-    }
+          openDialog({
+            title: 'Item Restored',
+            message: `"${item.title}" has been restored to Global Inventory.`,
+            confirmLabel: 'OK',
+            variant: 'success',
+            alertOnly: true,
+            onConfirm: async () => {
+              closeDialog();
+              await fetchRemovedItems();
+            },
+          });
+        } catch (err) {
+          console.error('[RecentlyRemovedItems] Restore error:', err);
+          openDialog({
+            title: 'Restore Failed',
+            message: err instanceof Error ? err.message : 'Failed to restore item',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            alertOnly: true,
+            onConfirm: closeDialog,
+          });
+        }
+      },
+    });
   };
 
   const handlePermanentDelete = async (itemIds: string[]) => {
@@ -130,131 +172,150 @@ export function RecentlyRemovedItems() {
     const selectedItemsData = items.filter(item => itemIds.includes(item.id));
     const totalFiles = selectedItemsData.reduce((sum, item) => sum + item.file_count, 0);
 
-    if (!confirm(`Are you sure you want to permanently delete ${itemCount} item${itemCount > 1 ? 's' : ''} and ${totalFiles} file${totalFiles !== 1 ? 's' : ''}?\n\nThis action CANNOT be undone.`)) {
-      return;
-    }
+    openDialog({
+      title: 'Permanently Delete Items',
+      message: `Permanently delete ${itemCount} item${itemCount > 1 ? 's' : ''} and ${totalFiles} associated file${totalFiles !== 1 ? 's' : ''}?`,
+      detail: 'This will remove them from the database and B2 storage. This action CANNOT be undone.',
+      confirmLabel: itemCount > 1 ? `Delete ${itemCount} Items` : 'Delete Permanently',
+      variant: 'danger',
+      onConfirm: async () => {
+        closeDialog();
+        const initialProgress: DeletionProgress[] = selectedItemsData.map(item => ({
+          itemId: item.id,
+          itemTitle: item.title,
+          status: 'pending',
+          filesDeleted: 0,
+          totalFiles: item.file_count
+        }));
 
-    // Initialize progress tracking
-    const initialProgress: DeletionProgress[] = selectedItemsData.map(item => ({
-      itemId: item.id,
-      itemTitle: item.title,
-      status: 'pending',
-      filesDeleted: 0,
-      totalFiles: item.file_count
-    }));
-
-    setDeletionProgress(initialProgress);
-    setShowProgressModal(true);
-
-    try {
-      let deletedItems = 0;
-      let deletedFiles = 0;
-      const errors: string[] = [];
-
-      for (let i = 0; i < itemIds.length; i++) {
-        const itemId = itemIds[i];
+        setDeletionProgress(initialProgress);
+        setShowProgressModal(true);
 
         try {
-          // Update status to deleting_files
-          setDeletionProgress(prev => prev.map(p =>
-            p.itemId === itemId ? { ...p, status: 'deleting_files' } : p
-          ));
+          let deletedItems = 0;
+          let deletedFiles = 0;
+          const errors: string[] = [];
 
-          const { data: assetGroups } = await supabase
-            .from('auction_files')
-            .select('asset_group_id')
-            .eq('item_id', itemId)
-            .eq('variant', 'source');
+          for (let i = 0; i < itemIds.length; i++) {
+            const itemId = itemIds[i];
 
-          const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
+            try {
+              setDeletionProgress(prev => prev.map(p =>
+                p.itemId === itemId ? { ...p, status: 'deleting_files' } : p
+              ));
 
-          const { error: detachError } = await supabase
-            .from('auction_files')
-            .update({ detached_at: new Date().toISOString() })
-            .eq('item_id', itemId)
-            .is('detached_at', null);
+              const { data: assetGroups } = await supabase
+                .from('auction_files')
+                .select('asset_group_id')
+                .eq('item_id', itemId)
+                .eq('variant', 'source');
 
-          if (detachError) {
-            throw new Error('Failed to detach files before deletion');
-          }
+              const uniqueAssetGroups = new Set(assetGroups?.map(f => f.asset_group_id) || []);
 
-          const workerUrl = import.meta.env.VITE_WORKER_URL;
-          if (workerUrl && uniqueAssetGroups.size > 0) {
-            let fileCount = 0;
-            for (const assetGroupId of uniqueAssetGroups) {
-              try {
-                const response = await fetch(`${workerUrl}/api/delete-asset-group`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ assetGroupId }),
-                });
+              const { error: detachError } = await supabase
+                .from('auction_files')
+                .update({ detached_at: new Date().toISOString() })
+                .eq('item_id', itemId)
+                .is('detached_at', null);
 
-                if (!response.ok) {
-                  const errorData = await response.json();
-                  throw new Error(errorData.error || 'Worker deletion failed');
+              if (detachError) throw new Error('Failed to detach files before deletion');
+
+              const workerUrl = import.meta.env.VITE_WORKER_URL;
+              if (workerUrl && uniqueAssetGroups.size > 0) {
+                let fileCount = 0;
+                for (const assetGroupId of uniqueAssetGroups) {
+                  try {
+                    const response = await fetch(`${workerUrl}/api/delete-asset-group`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ assetGroupId }),
+                    });
+
+                    if (!response.ok) {
+                      const errorData = await response.json();
+                      throw new Error(errorData.error || 'Worker deletion failed');
+                    }
+
+                    fileCount++;
+                    deletedFiles++;
+
+                    setDeletionProgress(prev => prev.map(p =>
+                      p.itemId === itemId ? { ...p, filesDeleted: fileCount } : p
+                    ));
+                  } catch (err) {
+                    console.error('[RecentlyRemovedItems] Failed to delete asset group from B2:', assetGroupId, err);
+                    throw err;
+                  }
                 }
-
-                fileCount++;
-                deletedFiles++;
-
-                // Update progress for each file deleted
-                setDeletionProgress(prev => prev.map(p =>
-                  p.itemId === itemId ? { ...p, filesDeleted: fileCount } : p
-                ));
-              } catch (err) {
-                console.error('[RecentlyRemovedItems] Failed to delete asset group from B2:', assetGroupId, err);
-                throw err;
               }
+
+              setDeletionProgress(prev => prev.map(p =>
+                p.itemId === itemId ? { ...p, status: 'deleting_item' } : p
+              ));
+
+              const { error } = await supabase
+                .from('inventory_items')
+                .delete()
+                .eq('id', itemId);
+
+              if (error) throw error;
+
+              deletedItems++;
+
+              setDeletionProgress(prev => prev.map(p =>
+                p.itemId === itemId ? { ...p, status: 'completed' } : p
+              ));
+            } catch (err) {
+              const item = items.find(i => i.id === itemId);
+              const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+              errors.push(`Failed to delete "${item?.title || itemId}": ${errorMsg}`);
+
+              setDeletionProgress(prev => prev.map(p =>
+                p.itemId === itemId ? { ...p, status: 'failed', error: errorMsg } : p
+              ));
             }
           }
 
-          // Update status to deleting_item
-          setDeletionProgress(prev => prev.map(p =>
-            p.itemId === itemId ? { ...p, status: 'deleting_item' } : p
-          ));
+          setTimeout(async () => {
+            setShowProgressModal(false);
+            setSelectedItems(new Set());
+            await fetchRemovedItems();
 
-          const { error } = await supabase
-            .from('inventory_items')
-            .delete()
-            .eq('id', itemId);
-
-          if (error) throw error;
-
-          deletedItems++;
-
-          // Update status to completed
-          setDeletionProgress(prev => prev.map(p =>
-            p.itemId === itemId ? { ...p, status: 'completed' } : p
-          ));
+            if (errors.length > 0) {
+              openDialog({
+                title: 'Deletion Complete With Errors',
+                message: `Deleted ${deletedItems} item(s) and ${deletedFiles} file(s), but ${errors.length} error(s) occurred.`,
+                detail: errors.join('\n'),
+                confirmLabel: 'OK',
+                variant: 'warning',
+                alertOnly: true,
+                onConfirm: closeDialog,
+              });
+            } else {
+              openDialog({
+                title: 'Deletion Complete',
+                message: `Successfully deleted ${deletedItems} item(s) and ${deletedFiles} file(s) from database and B2.`,
+                confirmLabel: 'OK',
+                variant: 'success',
+                alertOnly: true,
+                onConfirm: closeDialog,
+              });
+            }
+          }, 1500);
         } catch (err) {
-          const item = items.find(i => i.id === itemId);
-          const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-          errors.push(`Failed to delete "${item?.title || itemId}": ${errorMsg}`);
-
-          // Update status to failed
-          setDeletionProgress(prev => prev.map(p =>
-            p.itemId === itemId ? { ...p, status: 'failed', error: errorMsg } : p
-          ));
+          console.error('[RecentlyRemovedItems] Delete error:', err);
+          setShowProgressModal(false);
+          openDialog({
+            title: 'Deletion Failed',
+            message: err instanceof Error ? err.message : 'Failed to delete items',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            alertOnly: true,
+            onConfirm: closeDialog,
+          });
         }
-      }
-
-      // Wait a moment before closing to let users see completion
-      setTimeout(async () => {
-        setShowProgressModal(false);
-        setSelectedItems(new Set());
-        await fetchRemovedItems();
-
-        if (errors.length > 0) {
-          alert(`Deleted ${deletedItems} item(s) and ${deletedFiles} file(s) with ${errors.length} error(s):\n\n${errors.join('\n')}`);
-        } else {
-          alert(`Successfully deleted ${deletedItems} item(s) and ${deletedFiles} file(s) from database and B2.`);
-        }
-      }, 1500);
-    } catch (err) {
-      console.error('[RecentlyRemovedItems] Delete error:', err);
-      setShowProgressModal(false);
-      alert(err instanceof Error ? err.message : 'Failed to delete items');
-    }
+      },
+    });
   };
 
   const toggleItemSelection = (itemId: string) => {
@@ -277,7 +338,14 @@ export function RecentlyRemovedItems() {
 
   const handleDeleteSelected = () => {
     if (selectedItems.size === 0) {
-      alert('Please select at least one item to delete');
+      openDialog({
+        title: 'No Items Selected',
+        message: 'Please select at least one item to delete.',
+        confirmLabel: 'OK',
+        variant: 'info',
+        alertOnly: true,
+        onConfirm: closeDialog,
+      });
       return;
     }
     handlePermanentDelete(Array.from(selectedItems));
@@ -340,6 +408,18 @@ export function RecentlyRemovedItems() {
 
   return (
     <>
+      <ConfirmDialog
+        isOpen={dialog.isOpen}
+        title={dialog.title}
+        message={dialog.message}
+        detail={dialog.detail}
+        confirmLabel={dialog.confirmLabel}
+        variant={dialog.variant}
+        alertOnly={dialog.alertOnly}
+        onConfirm={dialog.onConfirm}
+        onCancel={closeDialog}
+      />
+
       {showProgressModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">

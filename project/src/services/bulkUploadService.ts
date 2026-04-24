@@ -28,6 +28,7 @@ export interface GroupedFile {
 export interface GroupedItem {
   inv_number: string;
   files: GroupedFile[];
+  hasBarcode?: boolean;
 }
 
 export interface AnalysisResults {
@@ -95,6 +96,7 @@ export const bulkUploadService = {
         console.log(`[BULK-UPLOAD] 🆕 Starting NEW group with barcode "${result.barcode}" (file: ${result.fileName})`);
         currentGroup = {
           inv_number: result.barcode,
+          hasBarcode: true,
           files: [{
             fileName: result.fileName,
             assetGroupId: tempAssetGroupId,
@@ -549,17 +551,24 @@ export const bulkUploadService = {
 
         console.log('[BULK-UPLOAD] Inventory number is unique, creating item...');
 
-        // Get the barcode image (first file in group) CDN URL
-        const barcodeFile = group.files[0];
-        const uploadedBarcodeFile = fileMap.get(barcodeFile?.fileName);
-        const barcodeImageUrl = uploadedBarcodeFile?.cdnUrls?.display || uploadedBarcodeFile?.cdnUrls?.thumb;
-        const barcodeAssetGroupId = barcodeFile?.assetGroupId;
+        // Only set barcode fields when a barcode was actually detected
+        let barcodeImageUrl: string | undefined;
+        let barcodeAssetGroupId: string | undefined;
 
-        console.log('[BULK-UPLOAD] Barcode info:', {
-          fileName: barcodeFile?.fileName,
-          assetGroupId: barcodeAssetGroupId,
-          imageUrl: barcodeImageUrl
-        });
+        if (group.hasBarcode) {
+          const barcodeFile = group.files[0];
+          const uploadedBarcodeFile = fileMap.get(barcodeFile?.fileName);
+          barcodeImageUrl = uploadedBarcodeFile?.cdnUrls?.display || uploadedBarcodeFile?.cdnUrls?.thumb;
+          barcodeAssetGroupId = barcodeFile?.assetGroupId;
+
+          console.log('[BULK-UPLOAD] Barcode info:', {
+            fileName: barcodeFile?.fileName,
+            assetGroupId: barcodeAssetGroupId,
+            imageUrl: barcodeImageUrl
+          });
+        } else {
+          console.log('[BULK-UPLOAD] No barcode for group', group.inv_number, '- skipping barcode fields');
+        }
 
         // Create new inventory item
         const { data: newItem, error: createError } = await supabase
@@ -569,8 +578,8 @@ export const bulkUploadService = {
             title: '',
             category: 'Uncategorized',
             status: 'cataloged',
-            barcode_image_url: barcodeImageUrl,
-            barcode_asset_group_id: barcodeAssetGroupId,
+            barcode_image_url: barcodeImageUrl || null,
+            barcode_asset_group_id: barcodeAssetGroupId || null,
           })
           .select('id')
           .single();
@@ -610,10 +619,19 @@ export const bulkUploadService = {
             variantsToInsert.push({ variant: 'thumb', cdn_url: uploaded.cdnUrls.thumb, source_key: uploaded.cdnUrls.thumb });
           }
 
+          const assetGroupId = file.assetGroupId;
+
+          // Re-link any orphaned records (item_id = NULL) for this asset group first
+          await supabase
+            .from('auction_files')
+            .update({ item_id: newItem.id, display_order: i })
+            .eq('asset_group_id', assetGroupId)
+            .is('item_id', null);
+
           for (const v of variantsToInsert) {
-            const { error: insertError } = await supabase.from('auction_files').insert({
+            const { error: insertError } = await supabase.from('auction_files').upsert({
               item_id: newItem.id,
-              asset_group_id: file.assetGroupId,
+              asset_group_id: assetGroupId,
               variant: v.variant,
               source_key: v.source_key,
               cdn_url: v.cdn_url,
@@ -621,9 +639,9 @@ export const bulkUploadService = {
               mime_type: uploaded.mimeType,
               published_status: v.variant === 'source' ? 'pending' : 'published',
               display_order: i
-            });
+            }, { onConflict: 'asset_group_id,variant', ignoreDuplicates: false });
 
-            if (insertError) {
+            if (insertError && insertError.code !== '23505') {
               console.error('[BULK-UPLOAD] Error inserting auction_file variant:', v.variant, insertError);
               if (v.variant === 'source') fileInsertFailed = true;
             }

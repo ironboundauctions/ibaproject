@@ -231,27 +231,56 @@ export class InventoryService {
     if (error) throw error;
   }
 
-  static async assignToEvent(inventoryId: string, eventId: string, lotNumber: string, saleOrder: number): Promise<void> {
+  static async assignToEvent(inventoryId: string, eventId: string, saleOrder: number): Promise<void> {
+    console.log('[assignToEvent] updating status for', inventoryId);
     const { error: updateError } = await supabase
       .from('inventory_items')
       .update({ status: 'assigned_to_auction' })
       .eq('id', inventoryId);
 
-    if (updateError) throw updateError;
+    if (updateError) {
+      console.error('[assignToEvent] status update failed:', updateError);
+      throw updateError;
+    }
 
-    const m = lotNumber.match(/(\d+)/g);
-    const derivedOrder = m ? parseInt(m[m.length - 1], 10) : saleOrder;
-
+    console.log('[assignToEvent] inserting assignment for', inventoryId, 'event', eventId);
     const { error: assignError } = await supabase
       .from('event_inventory_assignments')
       .insert({
         event_id: eventId,
         inventory_id: inventoryId,
-        lot_number: lotNumber,
-        sale_order: derivedOrder
+        lot_number: null,
+        sale_order: saleOrder
       });
 
-    if (assignError) throw assignError;
+    if (assignError) {
+      console.error('[assignToEvent] insert failed:', assignError);
+      throw assignError;
+    }
+  }
+
+  static async generateLotNumbers(eventId: string): Promise<void> {
+    const { data, error } = await supabase
+      .from('event_inventory_assignments')
+      .select('id, sale_order')
+      .eq('event_id', eventId)
+      .order('sale_order', { ascending: true });
+
+    if (error) throw error;
+
+    const updates = (data || []).map((row: any, index: number) => ({
+      id: row.id,
+      lot_number: `LOT ${index + 1}`,
+      sale_order: index + 1,
+    }));
+
+    for (const update of updates) {
+      const { error: updateError } = await supabase
+        .from('event_inventory_assignments')
+        .update({ lot_number: update.lot_number, sale_order: update.sale_order })
+        .eq('id', update.id);
+      if (updateError) throw updateError;
+    }
   }
 
   static async unassignFromEvent(inventoryId: string, eventId: string): Promise<void> {
@@ -304,6 +333,57 @@ export class InventoryService {
       lot_starting_price: assignment.lot_starting_price ?? null,
     }));
     return enrichItemsWithImages(items) as Promise<(InventoryItem & EventAssignment)[]>;
+  }
+
+  static async getBestQualityImagesForItems(itemIds: string[], barcodeGroupIds?: Map<string, string>): Promise<Record<string, string[]>> {
+    if (itemIds.length === 0) return {};
+
+    let barcodeMap = barcodeGroupIds;
+    if (!barcodeMap) {
+      const { data: itemRows } = await supabase
+        .from('inventory_items')
+        .select('id, barcode_asset_group_id')
+        .in('id', itemIds)
+        .not('barcode_asset_group_id', 'is', null);
+      barcodeMap = new Map(
+        (itemRows || []).map((r: any) => [r.id, r.barcode_asset_group_id])
+      );
+    }
+
+    const { data: files } = await supabase
+      .from('auction_files')
+      .select('item_id, cdn_url, variant, asset_group_id, display_order')
+      .in('item_id', itemIds)
+      .is('detached_at', null)
+      .eq('published_status', 'published')
+      .in('variant', ['source', 'display', 'thumb'])
+      .order('display_order', { ascending: true, nullsFirst: false });
+
+    const VARIANT_PRIORITY: Record<string, number> = { source: 0, display: 1, thumb: 2 };
+
+    const groupMap: Record<string, Map<string, { url: string; variant: string; order: number }>> = {};
+
+    for (const file of files || []) {
+      if (!file.cdn_url) continue;
+      const barcodeGroupId = barcodeMap?.get(file.item_id);
+      if (barcodeGroupId && file.asset_group_id === barcodeGroupId) continue;
+
+      if (!groupMap[file.item_id]) groupMap[file.item_id] = new Map();
+      const groupId = file.asset_group_id ?? file.cdn_url;
+      const existing = groupMap[file.item_id].get(groupId);
+      const priority = VARIANT_PRIORITY[file.variant] ?? 99;
+      if (!existing || priority < (VARIANT_PRIORITY[existing.variant] ?? 99)) {
+        groupMap[file.item_id].set(groupId, { url: file.cdn_url, variant: file.variant, order: file.display_order ?? 9999 });
+      }
+    }
+
+    const result: Record<string, string[]> = {};
+    for (const itemId of itemIds) {
+      const entries = groupMap[itemId] ? Array.from(groupMap[itemId].values()) : [];
+      entries.sort((a, b) => a.order - b.order);
+      result[itemId] = entries.map(e => e.url);
+    }
+    return result;
   }
 
   static async updateEventAssignment(

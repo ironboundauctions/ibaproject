@@ -171,10 +171,10 @@ export class FileUploadService {
     itemId?: string,
     onProgress?: (progress: number) => void
   ): Promise<UploadResponse> {
-    const maxRetries = 3;
+    const maxAttempts = 2;
     let lastError: Error | null = null;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const workerUrl = import.meta.env.VITE_WORKER_URL;
 
@@ -190,10 +190,22 @@ export class FileUploadService {
         formData.append('file', file);
         formData.append('item_id', itemId);
 
-        const response = await fetch(`${workerUrl}/api/upload-and-process`, {
-          method: 'POST',
-          body: formData,
-        });
+        // Use AbortController only for connection timeout (30s).
+        // Once the upload starts transferring, we let it run until completion
+        // regardless of file size.
+        const connectController = new AbortController();
+        const connectTimeout = setTimeout(() => connectController.abort(), 30_000);
+
+        let response: Response;
+        try {
+          response = await fetch(`${workerUrl}/api/upload-and-process`, {
+            method: 'POST',
+            body: formData,
+            signal: connectController.signal,
+          });
+        } finally {
+          clearTimeout(connectTimeout);
+        }
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));
@@ -209,19 +221,15 @@ export class FileUploadService {
         return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        console.error(`Upload attempt ${attempt}/${maxRetries} failed:`, lastError);
+        console.error(`Upload attempt ${attempt}/${maxAttempts} failed:`, lastError);
 
-        if (attempt < maxRetries) {
-          // Wait before retrying (exponential backoff: 1s, 2s, 4s)
-          const delay = Math.pow(2, attempt - 1) * 1000;
-          console.log(`Retrying in ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
     }
 
-    console.error('All upload attempts failed');
-    throw lastError || new Error('Upload failed after multiple attempts');
+    throw lastError || new Error('Upload failed');
   }
 
   static async uploadMultiplePCFilesToWorker(

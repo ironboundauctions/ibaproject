@@ -3,6 +3,7 @@ import { X, User, Phone, Upload, Camera, Lock, Eye, EyeOff } from 'lucide-react'
 import { ProfileService, UserProfile } from '../services/profileService';
 import { createAvatarsBucket } from '../utils/createAvatarsBucket';
 import { supabase } from '../lib/supabase';
+import AvatarCropModal from './AvatarCropModal';
 
 interface EditProfileModalProps {
   profile: UserProfile;
@@ -28,6 +29,7 @@ export default function EditProfileModal({ profile, onClose, onSave }: EditProfi
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(profile.avatar_url);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -54,8 +56,8 @@ export default function EditProfileModal({ profile, onClose, onSave }: EditProfi
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        setError('Image must be less than 5MB');
+      if (file.size > 20 * 1024 * 1024) {
+        setError('Image must be less than 20MB');
         return;
       }
 
@@ -64,14 +66,22 @@ export default function EditProfileModal({ profile, onClose, onSave }: EditProfi
         return;
       }
 
-      setAvatarFile(file);
+      setError('');
       const reader = new FileReader();
       reader.onloadend = () => {
-        setAvatarPreview(reader.result as string);
+        setCropSrc(reader.result as string);
       };
       reader.readAsDataURL(file);
-      setError('');
     }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleCropConfirm = (blob: Blob) => {
+    const file = new File([blob], 'avatar.jpg', { type: 'image/jpeg' });
+    setAvatarFile(file);
+    const url = URL.createObjectURL(blob);
+    setAvatarPreview(url);
+    setCropSrc(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -220,6 +230,14 @@ export default function EditProfileModal({ profile, onClose, onSave }: EditProfi
   };
 
   return (
+    <>
+    {cropSrc && (
+      <AvatarCropModal
+        imageSrc={cropSrc}
+        onConfirm={handleCropConfirm}
+        onCancel={() => setCropSrc(null)}
+      />
+    )}
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-white border-b border-ironbound-grey-200 px-6 py-4 flex items-center justify-between">
@@ -433,5 +451,6 @@ export default function EditProfileModal({ profile, onClose, onSave }: EditProfi
         </form>
       </div>
     </div>
+    </>
   );
 }

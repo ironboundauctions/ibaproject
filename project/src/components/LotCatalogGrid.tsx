@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Gavel, Search, Tag, CheckCircle, Image as ImageIcon, Lock, ChevronLeft, ChevronRight, Users } from 'lucide-react';
+import { Gavel, Search, Tag, CheckCircle, Image as ImageIcon, Lock, ChevronLeft, ChevronRight, Users, Play } from 'lucide-react';
 import { CatalogLot } from '../services/preBidService';
 import { formatCurrency } from '../utils/formatters';
 import PreBidModal from './PreBidModal';
@@ -185,14 +185,20 @@ export default function LotCatalogGrid({
                     {lot.lot_number}
                   </span>
                 </div>
-                {hasActivePrebid && (
-                  <div className="absolute top-2.5 right-2.5">
+                <div className="absolute top-2.5 right-2.5 flex flex-col items-end gap-1.5">
+                  {lot.has_video && (
+                    <span className="bg-black/70 text-white text-xs font-semibold px-2 py-0.5 rounded-full flex items-center gap-1 backdrop-blur-sm">
+                      <Play className="h-2.5 w-2.5 fill-white" />
+                      Video
+                    </span>
+                  )}
+                  {hasActivePrebid && (
                     <span className="bg-green-600 text-white text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1">
                       <CheckCircle className="h-3 w-3" />
                       My Bid
                     </span>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
 
               <div

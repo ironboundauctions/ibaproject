@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Building, Mail, MapPin, Hash, Phone } from 'lucide-react';
 import { Consignor, ConsignorFormData } from '../types/consigner';
 import { ConsignorService } from '../services/consignerService';
+import ConsignerIdDocuments from './ConsignerIdDocuments';
 
 interface ConsignorFormProps {
   consignor?: Consignor | null;
@@ -11,6 +12,8 @@ interface ConsignorFormProps {
 
 export default function ConsignorForm({ consignor, onSubmit, onCancel }: ConsignorFormProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [nextAvailable, setNextAvailable] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [formData, setFormData] = useState<ConsignorFormData>({
     customer_number: consignor?.customer_number || '',
@@ -23,15 +26,17 @@ export default function ConsignorForm({ consignor, onSubmit, onCancel }: Consign
   });
 
   useEffect(() => {
-    if (!consignor && !formData.customer_number) {
+    if (!consignor) {
       ConsignorService.generateCustomerNumber().then(generatedNumber => {
-        setFormData(prev => ({ ...prev, customer_number: generatedNumber }));
+        setNextAvailable(generatedNumber);
+        if (!formData.customer_number) {
+          setFormData(prev => ({ ...prev, customer_number: generatedNumber }));
+        }
       }).catch(err => {
         console.error('Failed to generate customer number:', err);
-        setError('Failed to generate customer number');
       });
     }
-  }, [consignor, formData.customer_number]);
+  }, [consignor]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,21 +57,39 @@ export default function ConsignorForm({ consignor, onSubmit, onCancel }: Consign
     }
   };
 
+  const formatPhone = (raw: string): string => {
+    const digits = raw.replace(/\D/g, '').slice(0, 10);
+    if (digits.length === 0) return '';
+    if (digits.length <= 3) return `(${digits}`;
+    if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  };
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+    if (name === 'phone') {
+      setFormData(prev => ({ ...prev, phone: formatPhone(value) }));
+    } else {
+      setFormData(prev => ({ ...prev, [name]: value }));
+    }
   };
 
   const generateNewCustomerNumber = async () => {
+    if (nextAvailable) {
+      setFormData(prev => ({ ...prev, customer_number: nextAvailable }));
+      return;
+    }
+    setIsGenerating(true);
+    setError('');
     try {
       const newNumber = await ConsignorService.generateCustomerNumber();
+      setNextAvailable(newNumber);
       setFormData(prev => ({ ...prev, customer_number: newNumber }));
     } catch (err) {
       console.error('Failed to generate customer number:', err);
-      setError('Failed to generate customer number');
+      setError('Failed to generate an available customer number');
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -111,13 +134,30 @@ export default function ConsignorForm({ consignor, onSubmit, onCancel }: Consign
               />
             </div>
             {!consignor && (
-              <button
-                type="button"
-                onClick={generateNewCustomerNumber}
-                className="px-4 py-3 border border-ironbound-grey-300 text-ironbound-grey-700 rounded-lg hover:bg-ironbound-grey-50 transition-colors whitespace-nowrap"
-              >
-                Generate New
-              </button>
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-xs text-ironbound-grey-400 font-mono">
+                  {nextAvailable ? (
+                    <>Next: <span className="font-semibold text-ironbound-orange-600">{nextAvailable}</span></>
+                  ) : (
+                    <span className="italic">Loading...</span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={generateNewCustomerNumber}
+                  disabled={isGenerating}
+                  className="px-4 py-2.5 border border-ironbound-grey-300 text-ironbound-grey-700 rounded-lg hover:bg-ironbound-grey-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap flex items-center gap-2 text-sm"
+                >
+                  {isGenerating ? (
+                    <>
+                      <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-ironbound-grey-500"></div>
+                      Finding...
+                    </>
+                  ) : (
+                    'Use Next Available'
+                  )}
+                </button>
+              </div>
             )}
           </div>
           <p className="text-xs text-ironbound-grey-500 mt-1">
@@ -234,6 +274,17 @@ export default function ConsignorForm({ consignor, onSubmit, onCancel }: Consign
               placeholder="email@example.com"
             />
           </div>
+        </div>
+
+        {/* ID Documents */}
+        <div className="pt-4 border-t border-ironbound-grey-200">
+          {consignor?.id ? (
+            <ConsignerIdDocuments consignerId={consignor.id} />
+          ) : (
+            <p className="text-xs text-ironbound-grey-400 italic">
+              Save the consignor first to attach ID documents.
+            </p>
+          )}
         </div>
 
         {/* Submit Buttons */}

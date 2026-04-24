@@ -22,9 +22,8 @@ export const supabase = hasSupabaseCredentials()
           'x-client-info': 'supabase-js-web',
         },
       },
-      // Set aggressive timeout
       realtime: {
-        timeout: 5000,
+        timeout: 30000,
       },
     })
   : null;

@@ -44,81 +44,122 @@ export class UploadHandler {
       const nextDisplayOrder = await this.db.getNextDisplayOrder(item_id);
 
       assetGroupId = crypto.randomUUID();
-      const variants = await this.imageProcessor.processImage(req.file.buffer);
-
+      const isVideo = this.imageProcessor.isVideo(req.file.mimetype);
       const uploadResults = [];
 
-      // Upload source variant (original file, converted to WebP)
-      const sourceB2Key = `assets/${item_id}/${assetGroupId}/source.webp`;
-      const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
-      await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
+      if (isVideo) {
+        // --- Video upload path ---
+        // 1. Store the original video file as the 'video' variant
+        const ext = req.file.originalname.split('.').pop()?.toLowerCase() || 'mp4';
+        const videoB2Key = `assets/${item_id}/${assetGroupId}/video.${ext}`;
+        const videoCdnUrl = this.storage.getCdnUrl(videoB2Key);
+        await this.storage.uploadFile(videoB2Key, req.file.buffer, req.file.mimetype);
 
-      const sourceVariantId = await this.db.upsertVariant(
-        assetGroupId,
-        'source',
-        sourceCdnUrl,
-        {
-          b2Key: sourceB2Key,
-          width: variants.display.width,
-          height: variants.display.height,
-          displayOrder: nextDisplayOrder,
-          itemId: item_id
-        }
-      );
-      createdFileIds.push(sourceVariantId);
-
-      await this.db.setVariantItemAndMetadata(sourceVariantId, item_id, req.file.originalname, variants.display.buffer.length, 'image/webp');
-
-      uploadResults.push({
-        variant: 'source',
-        b2_key: sourceB2Key,
-        cdn_url: sourceCdnUrl,
-        id: sourceVariantId,
-        width: variants.display.width,
-        height: variants.display.height
-      });
-
-      // Upload display and thumb variants
-      const variantEntries = [
-        { name: 'thumb', data: variants.thumb },
-        { name: 'display', data: variants.display }
-      ];
-
-      for (const { name, data } of variantEntries) {
-        const b2Key = `assets/${item_id}/${assetGroupId}/${name}.webp`;
-        const cdnUrl = this.storage.getCdnUrl(b2Key);
-
-        await this.storage.uploadFile(b2Key, data.buffer, 'image/webp');
-
-        const variantId = await this.db.upsertVariant(
+        const videoVariantId = await this.db.upsertVariant(
           assetGroupId,
-          name,
-          cdnUrl,
+          'video',
+          videoCdnUrl,
+          { b2Key: videoB2Key, width: 0, height: 0, displayOrder: nextDisplayOrder, itemId: item_id }
+        );
+        createdFileIds.push(videoVariantId);
+        await this.db.setVariantItemAndMetadata(videoVariantId, item_id, req.file.originalname, req.file.buffer.length, req.file.mimetype);
+
+        uploadResults.push({
+          variant: 'video',
+          b2_key: videoB2Key,
+          cdn_url: videoCdnUrl,
+          id: videoVariantId,
+          width: 0,
+          height: 0
+        });
+
+        // 2. Generate thumbnail from first frame (best-effort — skip if ffmpeg unavailable)
+        try {
+          const thumbnailVariants = await this.imageProcessor.processVideoThumbnail(req.file.buffer);
+
+          for (const { name, data } of [
+            { name: 'thumb', data: thumbnailVariants.thumb },
+            { name: 'display', data: thumbnailVariants.display }
+          ]) {
+            const b2Key = `assets/${item_id}/${assetGroupId}/${name}.webp`;
+            const cdnUrl = this.storage.getCdnUrl(b2Key);
+            await this.storage.uploadFile(b2Key, data.buffer, 'image/webp');
+
+            const variantId = await this.db.upsertVariant(
+              assetGroupId,
+              name,
+              cdnUrl,
+              { b2Key, width: data.width, height: data.height, displayOrder: nextDisplayOrder, itemId: item_id }
+            );
+            createdFileIds.push(variantId);
+            await this.db.setVariantItemAndMetadata(variantId, item_id, req.file.originalname, data.buffer.length, 'image/webp');
+
+            uploadResults.push({ variant: name, b2_key: b2Key, cdn_url: cdnUrl, id: variantId, width: data.width, height: data.height });
+          }
+        } catch (thumbError) {
+          logger.warn('Video thumbnail generation failed — video still uploaded', {
+            error: thumbError instanceof Error ? thumbError.message : String(thumbError)
+          });
+        }
+      } else {
+        // --- Image upload path (original logic) ---
+        const variants = await this.imageProcessor.processImage(req.file.buffer);
+
+        // Upload source variant (original file, converted to WebP)
+        const sourceB2Key = `assets/${item_id}/${assetGroupId}/source.webp`;
+        const sourceCdnUrl = this.storage.getCdnUrl(sourceB2Key);
+        await this.storage.uploadFile(sourceB2Key, variants.display.buffer, 'image/webp');
+
+        const sourceVariantId = await this.db.upsertVariant(
+          assetGroupId,
+          'source',
+          sourceCdnUrl,
           {
-            b2Key,
-            width: data.width,
-            height: data.height,
+            b2Key: sourceB2Key,
+            width: variants.display.width,
+            height: variants.display.height,
             displayOrder: nextDisplayOrder,
             itemId: item_id
           }
         );
-        createdFileIds.push(variantId);
-
-        await this.db.setVariantItemAndMetadata(variantId, item_id, req.file.originalname, data.buffer.length, 'image/webp');
+        createdFileIds.push(sourceVariantId);
+        await this.db.setVariantItemAndMetadata(sourceVariantId, item_id, req.file.originalname, variants.display.buffer.length, 'image/webp');
 
         uploadResults.push({
-          variant: name,
-          b2_key: b2Key,
-          cdn_url: cdnUrl,
-          id: variantId,
-          width: data.width,
-          height: data.height
+          variant: 'source',
+          b2_key: sourceB2Key,
+          cdn_url: sourceCdnUrl,
+          id: sourceVariantId,
+          width: variants.display.width,
+          height: variants.display.height
         });
+
+        // Upload display and thumb variants
+        for (const { name, data } of [
+          { name: 'thumb', data: variants.thumb },
+          { name: 'display', data: variants.display }
+        ]) {
+          const b2Key = `assets/${item_id}/${assetGroupId}/${name}.webp`;
+          const cdnUrl = this.storage.getCdnUrl(b2Key);
+          await this.storage.uploadFile(b2Key, data.buffer, 'image/webp');
+
+          const variantId = await this.db.upsertVariant(
+            assetGroupId,
+            name,
+            cdnUrl,
+            { b2Key, width: data.width, height: data.height, displayOrder: nextDisplayOrder, itemId: item_id }
+          );
+          createdFileIds.push(variantId);
+          await this.db.setVariantItemAndMetadata(variantId, item_id, req.file.originalname, data.buffer.length, 'image/webp');
+
+          uploadResults.push({ variant: name, b2_key: b2Key, cdn_url: cdnUrl, id: variantId, width: data.width, height: data.height });
+        }
       }
 
       logger.info('PC upload completed successfully', {
         item_id,
         asset_group_id: assetGroupId,
+        isVideo,
         variants: uploadResults.length
       });
 

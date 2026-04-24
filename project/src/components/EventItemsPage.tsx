@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, Plus, Search, Package, CreditCard as Edit2, Trash2, Hash, StickyNote, DollarSign, GripVertical, ChevronDown, ChevronUp, X, Check, AlertCircle, ListOrdered, Lock, Unlock } from 'lucide-react';
+import { ArrowLeft, Plus, Search, Package, CreditCard as Edit2, Trash2, Hash, StickyNote, DollarSign, GripVertical, ChevronDown, ChevronUp, X, Check, AlertCircle, ListOrdered, Lock, Unlock, Save, Images } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -20,6 +20,8 @@ import { ConsignorService } from '../services/consignerService';
 import { Consignor } from '../types/consigner';
 import { formatCurrency } from '../utils/formatters';
 import InventoryItemFormNew from './InventoryItemFormNew';
+import ConfirmDialog from './ConfirmDialog';
+import LotGalleryModal from './LotGalleryModal';
 
 interface Props {
   eventId: string;
@@ -40,12 +42,14 @@ function SortableRow({
   onEdit,
   onRemove,
   onSaveLot,
+  onViewGallery,
   locked,
 }: {
   item: EventItem;
   onEdit: (item: EventItem) => void;
   onRemove: (item: EventItem) => void;
   onSaveLot: (item: EventItem, fields: Partial<EventAssignment>) => Promise<void>;
+  onViewGallery: (item: EventItem) => void;
   locked: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -111,14 +115,23 @@ function SortableRow({
 
         <div className="flex-shrink-0">
           {item.image_url ? (
-            <img
-              src={item.image_url}
-              alt={item.title}
-              className="w-16 h-16 rounded-lg object-cover"
-              onError={(e) => {
-                e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
-              }}
-            />
+            <button
+              onClick={() => onViewGallery(item)}
+              className="relative group block w-16 h-16 rounded-lg overflow-hidden focus:outline-none focus:ring-2 focus:ring-ironbound-orange-500"
+              title="View photos"
+            >
+              <img
+                src={item.image_url}
+                alt={item.title}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
+                }}
+              />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                <Images className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </button>
           ) : (
             <div className="w-16 h-16 rounded-lg bg-ironbound-grey-100 flex items-center justify-center">
               <Package className="h-6 w-6 text-ironbound-grey-400" />
@@ -286,7 +299,16 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
   const [lotGenPrefix, setLotGenPrefix] = useState('');
   const [lotGenPadding, setLotGenPadding] = useState('3');
   const [locked, setLocked] = useState(false);
+  const [hasUnsavedOrder, setHasUnsavedOrder] = useState(false);
+  const [savingOrder, setSavingOrder] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<{
+    isOpen: boolean; title: string; message: string; confirmLabel: string;
+    variant: 'danger' | 'warning' | 'info'; onConfirm: () => void;
+  }>({ isOpen: false, title: '', message: '', confirmLabel: 'OK', variant: 'danger', onConfirm: () => {} });
+  const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+  const openDialog = (opts: Omit<typeof dialog, 'isOpen'>) => setDialog({ ...opts, isOpen: true });
+  const [galleryItem, setGalleryItem] = useState<EventItem | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
@@ -311,7 +333,7 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleDragEnd = async (event: DragEndEvent) => {
+  const handleDragEnd = (event: DragEndEvent) => {
     if (locked) return;
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -320,12 +342,23 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
     const newIndex = items.findIndex(i => i.id === over.id);
     const reordered = arrayMove(items, oldIndex, newIndex);
     setItems(reordered);
+    setHasUnsavedOrder(true);
+  };
 
-    for (let i = 0; i < reordered.length; i++) {
-      const item = reordered[i];
-      if (item.assignment_id) {
-        await InventoryService.updateEventAssignment(item.assignment_id, { sale_order: i + 1 });
+  const handleSaveOrder = async () => {
+    setSavingOrder(true);
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.assignment_id) {
+          await InventoryService.updateEventAssignment(item.assignment_id, { sale_order: i + 1 });
+        }
       }
+      setHasUnsavedOrder(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save order');
+    } finally {
+      setSavingOrder(false);
     }
   };
 
@@ -340,14 +373,28 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
     setItems(prev => prev.map(i => i.id === item.id ? { ...i, ...updatedFields } : i));
   };
 
-  const handleRemove = async (item: EventItem) => {
-    if (!confirm(`Remove "${item.title}" from this event?`)) return;
-    try {
-      await InventoryService.unassignFromEvent(item.id, eventId);
-      setItems(prev => prev.filter(i => i.id !== item.id));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove item');
-    }
+  const handleRemove = (item: EventItem) => {
+    openDialog({
+      title: 'Remove from Event',
+      message: `Remove "${item.title}" from this event?`,
+      confirmLabel: 'Remove',
+      variant: 'warning',
+      onConfirm: async () => {
+        closeDialog();
+        try {
+          await InventoryService.unassignFromEvent(item.id, eventId);
+          setItems(prev => prev.filter(i => i.id !== item.id));
+        } catch (err) {
+          openDialog({
+            title: 'Error',
+            message: err instanceof Error ? err.message : 'Failed to remove item',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            onConfirm: closeDialog,
+          });
+        }
+      },
+    });
   };
 
   const handleEditSubmit = async (data: CreateInventoryItemData) => {
@@ -388,7 +435,6 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
         await InventoryService.assignToEvent(
           itemId,
           eventId,
-          '',
           nextOrder
         );
         nextOrder++;
@@ -434,6 +480,12 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
     setGeneratingLots(true);
     try {
       const sorted = [...items].sort((a, b) => (a.sale_order ?? 0) - (b.sale_order ?? 0));
+      // Clear all lot numbers first to avoid unique constraint conflicts during reassignment
+      for (const item of sorted) {
+        if (item.assignment_id) {
+          await InventoryService.updateEventAssignment(item.assignment_id, { lot_number: null as any });
+        }
+      }
       for (let i = 0; i < sorted.length; i++) {
         const item = sorted[i];
         const lotNumber = buildLotNumber(i, start, lotGenPrefix, padding);
@@ -513,6 +565,16 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
   }
 
   return (
+    <>
+    <ConfirmDialog
+      isOpen={dialog.isOpen}
+      title={dialog.title}
+      message={dialog.message}
+      confirmLabel={dialog.confirmLabel}
+      variant={dialog.variant}
+      onConfirm={dialog.onConfirm}
+      onCancel={closeDialog}
+    />
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -529,6 +591,20 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
           </p>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
+          {hasUnsavedOrder && (
+            <button
+              onClick={handleSaveOrder}
+              disabled={savingOrder}
+              className="bg-green-600 hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed text-white px-4 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-2 shadow-sm"
+            >
+              {savingOrder ? (
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              {savingOrder ? 'Saving...' : 'Save Order'}
+            </button>
+          )}
           {items.length > 0 && (
             <button
               onClick={() => setShowLotGenModal(true)}
@@ -617,6 +693,7 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
                   onEdit={setEditingItem}
                   onRemove={handleRemove}
                   onSaveLot={handleSaveLot}
+                  onViewGallery={setGalleryItem}
                   locked={locked}
                 />
               ))}
@@ -820,5 +897,19 @@ export default function EventItemsPage({ eventId, eventTitle, onBack }: Props) {
         </div>
       )}
     </div>
+
+    {galleryItem && (
+      <LotGalleryModal
+        lot={{
+          inventory_id: galleryItem.id,
+          title: galleryItem.title,
+          lot_number: galleryItem.lot_number || undefined,
+          image_url: galleryItem.image_url,
+          barcode_asset_group_id: null,
+        }}
+        onClose={() => setGalleryItem(null)}
+      />
+    )}
+    </>
   );
 }

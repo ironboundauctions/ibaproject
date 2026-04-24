@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft, Plus, Trash2, Package, Search,
-  Eye, EyeOff, CheckSquare, Square, ChevronDown,
+  Eye, EyeOff, CheckSquare, Square, ChevronDown, Hash, Images,
 } from 'lucide-react';
 import { InventoryService, InventoryItem } from '../services/inventoryService';
 import { PreBidService } from '../services/preBidService';
 import { formatCurrency } from '../utils/formatters';
+import ConfirmDialog from './ConfirmDialog';
+import LotGalleryModal from './LotGalleryModal';
 
 interface AssignedItem extends InventoryItem {
   assignment_id?: string;
@@ -32,17 +34,26 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
   const [selectedLots, setSelectedLots] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [galleryItem, setGalleryItem] = useState<AssignedItem | null>(null);
+  const [dialog, setDialog] = useState<{
+    isOpen: boolean; title: string; message: string; confirmLabel: string;
+    variant: 'danger' | 'warning' | 'info'; alertOnly?: boolean; onConfirm: () => void;
+  }>({ isOpen: false, title: '', message: '', confirmLabel: 'OK', variant: 'danger', onConfirm: () => {} });
+  const closeDialog = () => setDialog(prev => ({ ...prev, isOpen: false }));
+  const openDialog = (opts: Omit<typeof dialog, 'isOpen'>) => setDialog({ ...opts, isOpen: true });
+
 
   useEffect(() => { fetchItems(); }, [eventId]);
 
   const fetchItems = async () => {
     try {
-      const [assigned, available] = await Promise.all([
+      const [assigned, all] = await Promise.all([
         InventoryService.getItemsForEvent(eventId),
-        InventoryService.getAvailableItems(),
+        InventoryService.getAllItemsForEventModal(),
       ]);
       setAssignedItems(assigned as AssignedItem[]);
-      setAvailableItems(available);
+      const assignedIds = new Set(assigned.map((i: any) => i.id));
+      setAvailableItems(all.filter(i => !assignedIds.has(i.id)));
     } catch (error) {
       console.error('Error fetching items:', error);
     } finally {
@@ -50,36 +61,89 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
     }
   };
 
-  const handleUnassignItem = async (inventoryId: string) => {
-    if (!confirm('Remove this item from the event?')) return;
-    try {
-      await InventoryService.unassignFromEvent(inventoryId, eventId);
-      await fetchItems();
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to remove item');
-    }
+  const handleUnassignItem = (inventoryId: string) => {
+    openDialog({
+      title: 'Remove from Event',
+      message: 'Remove this item from the event?',
+      confirmLabel: 'Remove',
+      variant: 'warning',
+      onConfirm: async () => {
+        closeDialog();
+        try {
+          await InventoryService.unassignFromEvent(inventoryId, eventId);
+          await fetchItems();
+        } catch (error) {
+          openDialog({
+            title: 'Error',
+            message: error instanceof Error ? error.message : 'Failed to remove item',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            alertOnly: true,
+            onConfirm: closeDialog,
+          });
+        }
+      },
+    });
   };
 
   const handleAssignItems = async () => {
     if (selectedForAdd.size === 0) return;
     try {
+      const { supabase } = await import('../lib/supabase');
+      const { data: maxOrderRow } = await supabase
+        .from('event_inventory_assignments')
+        .select('sale_order')
+        .eq('event_id', eventId)
+        .order('sale_order', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      let saleOrder = (maxOrderRow?.sale_order ?? 0) + 1;
+
       const itemsToAssign = Array.from(selectedForAdd);
-      let lotNumber = assignedItems.length + 1;
       for (const itemId of itemsToAssign) {
-        await InventoryService.assignToEvent(
-          itemId, eventId,
-          `LOT ${lotNumber}`,
-          lotNumber,
-        );
-        lotNumber++;
+        await InventoryService.assignToEvent(itemId, eventId, saleOrder);
+        saleOrder++;
       }
       setSelectedForAdd(new Set());
       setShowAddModal(false);
       setSearchQuery('');
       await fetchItems();
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to assign items');
+      console.error('[EventInventoryManager] handleAssignItems error:', error);
+      openDialog({
+        title: 'Error',
+        message: error instanceof Error ? error.message : String(error),
+        confirmLabel: 'OK',
+        variant: 'danger',
+        alertOnly: true,
+        onConfirm: closeDialog,
+      });
     }
+  };
+
+  const handleGenerateLotNumbers = async () => {
+    openDialog({
+      title: 'Generate Lot Numbers',
+      message: `This will assign sequential lot numbers (LOT 1, LOT 2, ...) to all ${assignedItems.length} items in the order they were added. Any existing lot numbers will be replaced.`,
+      confirmLabel: 'Generate',
+      variant: 'warning',
+      onConfirm: async () => {
+        closeDialog();
+        try {
+          await InventoryService.generateLotNumbers(eventId);
+          await fetchItems();
+        } catch (error) {
+          openDialog({
+            title: 'Error',
+            message: error instanceof Error ? error.message : 'Failed to generate lot numbers',
+            confirmLabel: 'OK',
+            variant: 'danger',
+            alertOnly: true,
+            onConfirm: closeDialog,
+          });
+        }
+      },
+    });
   };
 
   const handleTogglePublish = async (item: AssignedItem) => {
@@ -92,7 +156,14 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
         prev.map(i => i.assignment_id === item.assignment_id ? { ...i, lot_published: next } : i)
       );
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to update');
+      openDialog({
+        title: 'Error',
+        message: err instanceof Error ? err.message : 'Failed to update',
+        confirmLabel: 'OK',
+        variant: 'danger',
+        alertOnly: true,
+        onConfirm: closeDialog,
+      });
     } finally {
       setTogglingId(null);
     }
@@ -115,7 +186,14 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
         );
       }
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to bulk update');
+      openDialog({
+        title: 'Error',
+        message: err instanceof Error ? err.message : 'Failed to bulk update',
+        confirmLabel: 'OK',
+        variant: 'danger',
+        alertOnly: true,
+        onConfirm: closeDialog,
+      });
     }
   };
 
@@ -154,6 +232,17 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
   }
 
   return (
+    <>
+    <ConfirmDialog
+      isOpen={dialog.isOpen}
+      title={dialog.title}
+      message={dialog.message}
+      confirmLabel={dialog.confirmLabel}
+      variant={dialog.variant}
+      alertOnly={dialog.alertOnly}
+      onConfirm={dialog.onConfirm}
+      onCancel={closeDialog}
+    />
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -169,13 +258,24 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
             Manage inventory lots for this event
           </p>
         </div>
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Add Items</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {assignedItems.length > 0 && (
+            <button
+              onClick={handleGenerateLotNumbers}
+              className="border border-ironbound-grey-300 hover:border-ironbound-grey-400 text-ironbound-grey-700 hover:text-ironbound-grey-900 px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2 text-sm bg-white hover:bg-ironbound-grey-50"
+            >
+              <Hash className="h-4 w-4" />
+              <span>Generate Lot Numbers</span>
+            </button>
+          )}
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Add Items</span>
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-md p-6">
@@ -287,14 +387,23 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
 
                   <div className="flex-shrink-0">
                     {item.image_url ? (
-                      <img
-                        src={item.image_url}
-                        alt={item.title}
-                        className={`w-14 h-14 rounded-lg object-cover ${!isPublished ? 'opacity-50' : ''}`}
-                        onError={(e) => {
-                          e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=200&h=200&dpr=1';
-                        }}
-                      />
+                      <button
+                        onClick={() => setGalleryItem(item)}
+                        className="relative group block w-14 h-14 rounded-lg overflow-hidden focus:outline-none focus:ring-2 focus:ring-ironbound-orange-500"
+                        title="View photos"
+                      >
+                        <img
+                          src={item.image_url}
+                          alt={item.title}
+                          className={`w-full h-full object-cover transition-opacity ${!isPublished ? 'opacity-50' : ''}`}
+                          onError={(e) => {
+                            e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=200&h=200&dpr=1';
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                          <Images className="h-4 w-4 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      </button>
                     ) : (
                       <div className="w-14 h-14 rounded-lg bg-ironbound-grey-200 flex items-center justify-center">
                         <Package className="h-5 w-5 text-ironbound-grey-400" />
@@ -307,7 +416,12 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
                       {item.title}
                     </div>
                     <div className="text-xs text-ironbound-grey-400 mt-0.5">
-                      #{item.inventory_number} · <span className="font-medium text-ironbound-grey-600">{item.lot_number}</span>
+                      #{item.inventory_number}
+                      {item.lot_number ? (
+                        <> · <span className="font-medium text-ironbound-grey-600">{item.lot_number}</span></>
+                      ) : (
+                        <> · <span className="text-ironbound-grey-300 italic">No lot #</span></>
+                      )}
                     </div>
                   </div>
 
@@ -446,5 +560,19 @@ export default function EventInventoryManager({ eventId, eventTitle, onBack }: E
         </div>
       )}
     </div>
+
+    {galleryItem && (
+      <LotGalleryModal
+        lot={{
+          inventory_id: galleryItem.id,
+          title: galleryItem.title,
+          lot_number: galleryItem.lot_number || undefined,
+          image_url: galleryItem.image_url,
+          barcode_asset_group_id: null,
+        }}
+        onClose={() => setGalleryItem(null)}
+      />
+    )}
+    </>
   );
 }

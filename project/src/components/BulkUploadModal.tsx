@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import { generateUUID } from '../utils/formatters';
-import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical, ExternalLink } from 'lucide-react';
+import { X, Upload, Loader2, CheckCircle2, AlertCircle, Trash2, Plus, GripVertical, ExternalLink, Scissors, Barcode, ZoomIn } from 'lucide-react';
 import {
   bulkUploadService,
   type UploadedFileInfo,
@@ -27,6 +27,51 @@ type UploadStage = 'select' | 'analyzing' | 'uploading' | 'confirm' | 'processin
  * type UploadStage = 'select' | 'reducing' | 'uploading' | 'analyzing' | 'confirm' | 'processing' | 'complete';
  */
 
+// Memoized single ungrouped tile — only re-renders when its own selection state changes
+const UngroupedTile = memo(function UngroupedTile({
+  file,
+  thumbSrc,
+  isSelected,
+  onToggle,
+  onDelete,
+}: {
+  file: GroupedFile;
+  thumbSrc: string | undefined;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div
+      className={`relative group cursor-pointer rounded-lg overflow-hidden ${isSelected ? 'ring-2 ring-blue-500' : ''}`}
+      onClick={() => onToggle(file.assetGroupId)}
+    >
+      {thumbSrc ? (
+        <img
+          src={thumbSrc}
+          alt={file.fileName}
+          loading="lazy"
+          decoding="async"
+          className="w-full h-24 object-cover"
+        />
+      ) : (
+        <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
+          <p className="text-xs text-gray-500 text-center px-2">{file.fileName}</p>
+        </div>
+      )}
+      {isSelected && (
+        <div className="absolute inset-0 bg-blue-500 bg-opacity-20 pointer-events-none" />
+      )}
+      <button
+        onClick={e => { e.stopPropagation(); onDelete(file.assetGroupId); }}
+        className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        <Trash2 className="w-3 h-3" />
+      </button>
+    </div>
+  );
+});
+
 export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUploadModalProps) {
   const [stage, setStage] = useState<UploadStage>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -51,6 +96,12 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
   const [sourceMode, setSourceMode] = useState<'pc' | 'irondrive'>('pc');
   const [ironDriveFiles, setIronDriveFiles] = useState<Array<{ source_key: string; mime_type: string; filename: string; assetGroupId: string }>>([]);
   const [processingIronDrive, setProcessingIronDrive] = useState(false);
+  const [splitGroupIndex, setSplitGroupIndex] = useState<number | null>(null);
+  const [splitSelectedFiles, setSplitSelectedFiles] = useState<Set<string>>(new Set());
+  const [splitNewNumber, setSplitNewNumber] = useState<string>('');
+  const [splitBarcodeFile, setSplitBarcodeFile] = useState<string | null>(null);
+  const [previewImageSrc, setPreviewImageSrc] = useState<string | null>(null);
+  const [previewImageName, setPreviewImageName] = useState<string>('');
 
   /* REVERT POINT 2: If reverting to worker-based scanning, restore these states:
    * const [fileMap, setFileMap] = useState<Map<string, File>>(new Map());
@@ -112,6 +163,9 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setSourceMode('pc');
     setIronDriveFiles([]);
     setProcessingIronDrive(false);
+    setSplitGroupIndex(null);
+    setSplitSelectedFiles(new Set());
+    setSplitNewNumber('');
   };
 
   /* REVERT POINT 2: If reverting to worker-based scanning, add these back to resetModal:
@@ -119,6 +173,13 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
    * setReductionProgress({ current: 0, total: 0, currentFile: '' });
    * setReductionStats(null);
    */
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -408,6 +469,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       ...prev,
       {
         inv_number: newGroupNumber.trim(),
+        hasBarcode: false,
         files: filesToMove,
       },
     ]);
@@ -428,9 +490,89 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     setGroups(prev => prev.filter((_, i) => i !== groupIndex));
   };
 
-  const handleDeleteUngrouped = (assetGroupId: string) => {
-    setUngrouped(prev => prev.filter(f => f.assetGroupId !== assetGroupId));
+  const handleStartSplit = (groupIndex: number) => {
+    setSplitGroupIndex(groupIndex);
+    setSplitSelectedFiles(new Set());
+    setSplitNewNumber('');
+    setSplitBarcodeFile(null);
+    setExpandedGroups(prev => {
+      const updated = new Set(prev);
+      updated.add(groups[groupIndex].inv_number);
+      return updated;
+    });
   };
+
+  const handleCancelSplit = () => {
+    setSplitGroupIndex(null);
+    setSplitSelectedFiles(new Set());
+    setSplitNewNumber('');
+    setSplitBarcodeFile(null);
+  };
+
+  const handleToggleSplitFile = (assetGroupId: string) => {
+    setSplitBarcodeFile(null);
+    setSplitSelectedFiles(prev => {
+      const updated = new Set(prev);
+      if (updated.has(assetGroupId)) {
+        updated.delete(assetGroupId);
+      } else {
+        updated.add(assetGroupId);
+      }
+      return updated;
+    });
+  };
+
+  const handleMarkAsBarcodeFile = (assetGroupId: string, groupIndex: number) => {
+    setGroups(currentGroups => {
+      const groupFiles = currentGroups[groupIndex]?.files ?? [];
+      const pivotIndex = groupFiles.findIndex(f => f.assetGroupId === assetGroupId);
+      if (pivotIndex === -1) return currentGroups;
+      const autoSelected = new Set(groupFiles.slice(pivotIndex).map(f => f.assetGroupId));
+      setSplitBarcodeFile(assetGroupId);
+      setSplitSelectedFiles(autoSelected);
+      return currentGroups;
+    });
+  };
+
+  const handleConfirmSplit = () => {
+    if (splitGroupIndex === null || !splitNewNumber.trim() || splitSelectedFiles.size === 0) return;
+
+    const newInvNumber = splitNewNumber.trim();
+
+    if (groups.some(g => g.inv_number === newInvNumber)) {
+      setError(`Inventory number ${newInvNumber} already exists in this batch.`);
+      return;
+    }
+
+    const groupFiles = groups[splitGroupIndex].files;
+    const filesToSplit = splitBarcodeFile
+      ? groupFiles.filter(f => splitSelectedFiles.has(f.assetGroupId))
+      : groupFiles.filter(f => splitSelectedFiles.has(f.assetGroupId));
+
+    setGroups(prev => {
+      const updated = [...prev];
+      updated[splitGroupIndex] = {
+        ...updated[splitGroupIndex],
+        files: updated[splitGroupIndex].files.filter(f => !splitSelectedFiles.has(f.assetGroupId)),
+      };
+      return [...updated, { inv_number: newInvNumber, files: filesToSplit }];
+    });
+
+    setExpandedGroups(prev => {
+      const updated = new Set(prev);
+      updated.add(newInvNumber);
+      return updated;
+    });
+
+    setSplitGroupIndex(null);
+    setSplitSelectedFiles(new Set());
+    setSplitNewNumber('');
+    setSplitBarcodeFile(null);
+  };
+
+  const handleDeleteUngrouped = useCallback((assetGroupId: string) => {
+    setUngrouped(prev => prev.filter(f => f.assetGroupId !== assetGroupId));
+  }, []);
 
   const handleRemoveGroupFromBatch = (inv_number: string) => {
     // Completely remove a group and its files from the batch (no moving to ungrouped)
@@ -641,7 +783,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
     });
   };
 
-  const toggleUngroupedSelected = (assetGroupId: string) => {
+  const toggleUngroupedSelected = useCallback((assetGroupId: string) => {
     setSelectedUngrouped(prev => {
       const updated = new Set(prev);
       if (updated.has(assetGroupId)) {
@@ -651,12 +793,29 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
       }
       return updated;
     });
+  }, []);
+
+  // Memoize blob URLs so they aren't recreated on every render (big perf win for large ungrouped grids)
+  const blobUrlMap = useMemo(() => {
+    const map = new Map<string, string>();
+    selectedFiles.forEach(f => map.set(f.name, URL.createObjectURL(f)));
+    return map;
+  }, [selectedFiles]);
+
+  const getThumbSrc = (file: GroupedFile) => {
+    if (blobUrlMap.has(file.fileName)) return blobUrlMap.get(file.fileName);
+    const uploadedFile = uploadedFiles.find(f => f.assetGroupId === file.assetGroupId || f.fileName === file.fileName);
+    return uploadedFile?.cdnUrls?.thumb;
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      onWheel={e => e.stopPropagation()}
+      onTouchMove={e => e.stopPropagation()}
+    >
       <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between p-6 border-b">
           <h2 className="text-2xl font-bold text-gray-900">Bulk Inventory Upload</h2>
@@ -665,7 +824,7 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto p-6" style={{ overscrollBehavior: 'contain', willChange: 'scroll-position' }}>
           {error && (
             <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
               <div className="flex items-start gap-2">
@@ -936,6 +1095,37 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
 
           {stage === 'confirm' && (
             <div className="space-y-6">
+              {/* Sticky action bar */}
+              <div className="sticky top-0 z-10 -mx-6 -mt-6 px-6 py-3 bg-white border-b border-gray-200 flex items-center justify-between gap-4 shadow-sm">
+                <div className="flex items-center gap-4 text-sm text-gray-600">
+                  <span><span className="font-semibold text-gray-900">{groups.reduce((s, g) => s + g.files.length, 0)}</span> grouped</span>
+                  {ungrouped.length > 0 && <span><span className="font-semibold text-yellow-700">{ungrouped.length}</span> ungrouped</span>}
+                  {groups.length > 0 && <span className="text-gray-400">&rarr; {groups.length} item{groups.length !== 1 ? 's' : ''} to create</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCancel}
+                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirm}
+                    disabled={validationErrors.length > 0 || groups.length === 0}
+                    className={`px-5 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      validationErrors.length > 0 || groups.length === 0
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-blue-600 text-white hover:bg-blue-700'
+                    }`}
+                  >
+                    {validationErrors.length > 0
+                      ? 'Fix Conflicts First'
+                      : `Process & Upload ${groups.length} Item${groups.length !== 1 ? 's' : ''}`
+                    }
+                  </button>
+                </div>
+              </div>
+
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                 <p className="text-blue-800 font-medium mb-2">Review and Organize Files</p>
                 <p className="text-sm text-blue-600">
@@ -967,70 +1157,213 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
               {groups.length > 0 && (
                 <div className="space-y-4">
                   <h3 className="font-semibold text-gray-900">Grouped Items ({groups.length})</h3>
-                  {groups.map((group, groupIndex) => (
-                    <div key={groupIndex} className="border border-gray-200 rounded-lg">
-                      <div
-                        className="flex items-center justify-between p-4 bg-gray-50 cursor-pointer"
-                        onClick={() => toggleGroupExpanded(group.inv_number)}
-                      >
-                        <div className="flex items-center gap-3">
-                          <GripVertical className="w-5 h-5 text-gray-400" />
-                          <div>
-                            <p className="font-medium text-gray-900">
-                              Inventory #{group.inv_number}
-                            </p>
-                            <p className="text-sm text-gray-500">
-                              {group.files.length} file{group.files.length !== 1 ? 's' : ''}
-                            </p>
+                  {groups.map((group, groupIndex) => {
+                    const isSplitting = splitGroupIndex === groupIndex;
+                    return (
+                      <div key={groupIndex} className={`border rounded-lg ${isSplitting ? 'border-amber-400' : 'border-gray-200'}`}>
+                        <div
+                          className={`flex items-center justify-between p-4 cursor-pointer ${isSplitting ? 'bg-amber-50' : 'bg-gray-50'}`}
+                          onClick={() => !isSplitting && toggleGroupExpanded(group.inv_number)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <GripVertical className="w-5 h-5 text-gray-400" />
+                            <div>
+                              <p className="font-medium text-gray-900">
+                                Inventory #{group.inv_number}
+                              </p>
+                              <p className="text-sm text-gray-500">
+                                {group.files.length} file{group.files.length !== 1 ? 's' : ''}
+                                {isSplitting && <span className="ml-2 text-amber-600 font-medium">— select images to split off</span>}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                            {!isSplitting && group.files.length > 1 && (
+                              <button
+                                onClick={() => handleStartSplit(groupIndex)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors"
+                                title="Split this group into two"
+                              >
+                                <Scissors className="w-4 h-4" />
+                                Split
+                              </button>
+                            )}
+                            {!isSplitting && (
+                              <button
+                                onClick={() => handleDeleteGroup(groupIndex)}
+                                className="text-red-600 hover:text-red-700 p-1"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
+                            )}
                           </div>
                         </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteGroup(groupIndex);
-                          }}
-                          className="text-red-600 hover:text-red-700"
-                        >
-                          <Trash2 className="w-5 h-5" />
-                        </button>
-                      </div>
 
-                      {expandedGroups.has(group.inv_number) && (
-                        <div className="p-4 grid grid-cols-4 gap-4">
-                          {group.files.map((file) => {
-                            const originalFile = selectedFiles.find(f => f.name === file.fileName);
-                            const uploadedFile = uploadedFiles.find(f => f.assetGroupId === file.assetGroupId || f.fileName === file.fileName);
-                            const thumbSrc = originalFile
-                              ? URL.createObjectURL(originalFile)
-                              : uploadedFile?.cdnUrls?.thumb;
-                            return (
-                              <div key={file.assetGroupId} className="relative group">
-                                {thumbSrc ? (
-                                  <img
-                                    src={thumbSrc}
-                                    alt={file.fileName}
-                                    className="w-full h-24 object-cover rounded-lg"
-                                  />
-                                ) : (
-                                  <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
-                                    <p className="text-xs text-gray-500 text-center px-2">
-                                      {file.fileName}
-                                    </p>
-                                  </div>
-                                )}
+                        {isSplitting && (
+                          <div className="p-4 border-t border-amber-200 bg-amber-50 space-y-3">
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium text-amber-900">
+                                Two ways to split:
+                              </p>
+                              <p className="text-xs text-amber-700">
+                                <span className="inline-flex items-center gap-1 font-semibold"><Barcode className="w-3 h-3" /> Barcode button</span> — click the barcode icon on the image that is the failed barcode scan. It and all images after it will be selected as the new group automatically.
+                              </p>
+                              <p className="text-xs text-amber-700">
+                                <span className="font-semibold">Click image</span> — manually toggle individual images for the new group.
+                              </p>
+                            </div>
+
+                            {splitBarcodeFile && (
+                              <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
+                                <Barcode className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                                <span className="text-xs text-blue-800 font-medium">
+                                  Barcode image identified — {splitSelectedFiles.size} file{splitSelectedFiles.size !== 1 ? 's' : ''} selected (barcode + all following images)
+                                </span>
                                 <button
-                                  onClick={() => handleRemoveFromGroup(groupIndex, file.assetGroupId)}
-                                  className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={() => { setSplitBarcodeFile(null); setSplitSelectedFiles(new Set()); }}
+                                  className="ml-auto text-blue-400 hover:text-blue-600"
                                 >
-                                  <X className="w-3 h-3" />
+                                  <X className="w-3.5 h-3.5" />
                                 </button>
                               </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                            )}
+
+                            <div className="grid grid-cols-4 gap-3">
+                              {group.files.map((file, fileIndex) => {
+                                const thumbSrc = getThumbSrc(file);
+                                const isSelected = splitSelectedFiles.has(file.assetGroupId);
+                                const isBarcodeFile = splitBarcodeFile === file.assetGroupId;
+                                return (
+                                  <div key={file.assetGroupId} className="relative group">
+                                    <div
+                                      className={`relative cursor-pointer rounded-lg overflow-hidden ring-2 transition-all ${
+                                        isBarcodeFile
+                                          ? 'ring-blue-500'
+                                          : isSelected
+                                            ? 'ring-amber-500'
+                                            : 'ring-transparent hover:ring-amber-300'
+                                      }`}
+                                      onClick={() => handleToggleSplitFile(file.assetGroupId)}
+                                    >
+                                      {thumbSrc ? (
+                                        <img src={thumbSrc} alt={file.fileName} className="w-full h-24 object-cover" />
+                                      ) : (
+                                        <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
+                                          <p className="text-xs text-gray-500 text-center px-2">{file.fileName}</p>
+                                        </div>
+                                      )}
+                                      {isBarcodeFile && (
+                                        <div className="absolute inset-0 bg-blue-500 bg-opacity-30 flex items-center justify-center">
+                                          <div className="px-2 py-1 bg-blue-600 rounded text-white text-xs font-bold flex items-center gap-1">
+                                            <Barcode className="w-3 h-3" />
+                                            Barcode
+                                          </div>
+                                        </div>
+                                      )}
+                                      {!isBarcodeFile && isSelected && (
+                                        <div className="absolute inset-0 bg-amber-500 bg-opacity-30 flex items-center justify-center">
+                                          <div className="w-6 h-6 rounded-full bg-amber-500 flex items-center justify-center">
+                                            <CheckCircle2 className="w-5 h-5 text-white" />
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <button
+                                      title="Mark as barcode — selects this and all following images"
+                                      onClick={e => { e.stopPropagation(); handleMarkAsBarcodeFile(file.assetGroupId, groupIndex); }}
+                                      className={`absolute top-1 right-1 p-1 rounded-md transition-all z-10 ${
+                                        isBarcodeFile
+                                          ? 'bg-blue-600 text-white opacity-100'
+                                          : 'bg-black bg-opacity-60 text-white opacity-0 group-hover:opacity-100 hover:bg-blue-600'
+                                      }`}
+                                    >
+                                      <Barcode className="w-3.5 h-3.5" />
+                                    </button>
+                                    {thumbSrc && (
+                                      <button
+                                        title="Preview image"
+                                        onClick={e => { e.stopPropagation(); setPreviewImageSrc(thumbSrc); setPreviewImageName(file.fileName); }}
+                                        className="absolute bottom-1 right-1 p-1 rounded-md bg-black bg-opacity-60 text-white opacity-0 group-hover:opacity-100 hover:bg-gray-800 transition-all z-10"
+                                      >
+                                        <ZoomIn className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                    <div className="absolute top-1 left-1 w-5 h-5 rounded-full bg-black bg-opacity-60 text-white text-xs flex items-center justify-center font-mono z-10 pointer-events-none">
+                                      {fileIndex + 1}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            <div className="flex gap-2 items-center">
+                              <input
+                                type="text"
+                                value={splitNewNumber}
+                                onChange={e => setSplitNewNumber(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleConfirmSplit()}
+                                placeholder="New inventory number for split group (e.g. 226785)"
+                                className="flex-1 px-3 py-2 border border-amber-300 rounded-lg text-gray-900 bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                              />
+                              <button
+                                onClick={handleConfirmSplit}
+                                disabled={splitSelectedFiles.size === 0 || !splitNewNumber.trim()}
+                                className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed font-medium text-sm transition-colors"
+                              >
+                                Split ({splitSelectedFiles.size})
+                              </button>
+                              <button
+                                onClick={handleCancelSplit}
+                                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {!isSplitting && expandedGroups.has(group.inv_number) && (
+                          <div className="p-4 grid grid-cols-4 gap-4">
+                            {group.files.map((file) => {
+                              const thumbSrc = getThumbSrc(file);
+                              return (
+                                <div key={file.assetGroupId} className="relative group">
+                                  {thumbSrc ? (
+                                    <img
+                                      src={thumbSrc}
+                                      alt={file.fileName}
+                                      className="w-full h-24 object-cover rounded-lg"
+                                    />
+                                  ) : (
+                                    <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
+                                      <p className="text-xs text-gray-500 text-center px-2">
+                                        {file.fileName}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {thumbSrc && (
+                                    <button
+                                      onClick={() => { setPreviewImageSrc(thumbSrc); setPreviewImageName(file.fileName); }}
+                                      className="absolute bottom-1 left-1 bg-black bg-opacity-60 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-800"
+                                      title="Preview image"
+                                    >
+                                      <ZoomIn className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => handleRemoveFromGroup(groupIndex, file.assetGroupId)}
+                                    className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -1080,45 +1413,16 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
                   )}
 
                   <div className="grid grid-cols-4 gap-4">
-                    {ungrouped.map((file) => {
-                      const originalFile = selectedFiles.find(f => f.name === file.fileName);
-                      const uploadedFile = uploadedFiles.find(f => f.assetGroupId === file.assetGroupId || f.fileName === file.fileName);
-                      const thumbSrc = originalFile
-                        ? URL.createObjectURL(originalFile)
-                        : uploadedFile?.cdnUrls?.thumb;
-                      return (
-                        <div
-                          key={file.assetGroupId}
-                          className={`relative group cursor-pointer ${
-                            selectedUngrouped.has(file.assetGroupId) ? 'ring-2 ring-blue-500' : ''
-                          }`}
-                          onClick={() => toggleUngroupedSelected(file.assetGroupId)}
-                        >
-                          {thumbSrc ? (
-                            <img
-                              src={thumbSrc}
-                              alt={file.fileName}
-                              className="w-full h-24 object-cover rounded-lg"
-                            />
-                          ) : (
-                            <div className="w-full h-24 bg-gray-100 rounded-lg flex items-center justify-center">
-                              <p className="text-xs text-gray-500 text-center px-2">
-                                {file.fileName}
-                              </p>
-                            </div>
-                          )}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteUngrouped(file.assetGroupId);
-                            }}
-                            className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      );
-                    })}
+                    {ungrouped.map((file) => (
+                      <UngroupedTile
+                        key={file.assetGroupId}
+                        file={file}
+                        thumbSrc={getThumbSrc(file)}
+                        isSelected={selectedUngrouped.has(file.assetGroupId)}
+                        onToggle={toggleUngroupedSelected}
+                        onDelete={handleDeleteUngrouped}
+                      />
+                    ))}
                   </div>
                 </div>
               )}
@@ -1206,6 +1510,35 @@ export default function BulkUploadModal({ isOpen, onClose, onSuccess }: BulkUplo
           )}
         </div>
       </div>
+
+      {previewImageSrc && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black bg-opacity-85"
+          onClick={() => setPreviewImageSrc(null)}
+        >
+          <div
+            className="relative max-w-4xl max-h-[90vh] mx-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <img
+              src={previewImageSrc}
+              alt={previewImageName}
+              className="max-w-full max-h-[85vh] rounded-lg object-contain shadow-2xl"
+            />
+            <button
+              onClick={() => setPreviewImageSrc(null)}
+              className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center text-gray-700 hover:text-gray-900 hover:shadow-xl transition-all"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            {previewImageName && (
+              <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-xs px-3 py-2 rounded-b-lg truncate">
+                {previewImageName}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

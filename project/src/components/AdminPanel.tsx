@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, Plus, CreditCard as Edit, Trash2, Eye, BarChart3, Users, Gavel, DollarSign, List, UserPlus, Shield, Package, User, Key, Mail, Lock, X, Globe, EyeOff, BookOpen, Info } from 'lucide-react';
+import { ArrowLeft, Plus, CreditCard as Edit, Trash2, Eye, BarChart3, Users, Gavel, DollarSign, List, UserPlus, Shield, Package, User, Key, Mail, Lock, X, Globe, EyeOff, BookOpen, Info, Radio, Monitor, ScrollText } from 'lucide-react';
 import { Auction } from '../types/auction';
 import { AdminStats } from '../types/admin';
 import { AdminService } from '../services/adminService';
@@ -19,6 +19,7 @@ import { RecentlyRemovedFiles } from './RecentlyRemovedFiles';
 import { RecentlyRemovedItems } from './RecentlyRemovedItems';
 import { OrphanedRecordsCleanup } from './OrphanedRecordsCleanup';
 import { B2BucketCleanup } from './B2BucketCleanup';
+import AuctionLogsModal from './AuctionLogsModal';
 
 interface AdminPanelProps {
   onBack: () => void;
@@ -26,9 +27,10 @@ interface AdminPanelProps {
   onAuctionsUpdate: (auctions: Auction[]) => void;
   adminView?: string;
   onAdminViewChange?: (view: string) => void;
+  initialCatalogEventId?: string | null;
 }
 
-export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminView = 'dashboard', onAdminViewChange }: AdminPanelProps) {
+export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminView = 'dashboard', onAdminViewChange, initialCatalogEventId }: AdminPanelProps) {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState(adminView);
   const [stats, setStats] = useState<AdminStats | null>(null);
@@ -36,8 +38,15 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
   const [selectedLot, setSelectedLot] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [adminUsers, setAdminUsers] = useState<any[]>([]);
-  const [managingEventInventory, setManagingEventInventory] = useState<{ id: string; title: string } | null>(null);
+  const [managingEventInventory, setManagingEventInventory] = useState<{ id: string; title: string } | null>(() => {
+    if (initialCatalogEventId) {
+      const match = auctions.find(a => a.id === initialCatalogEventId);
+      if (match) return { id: match.id, title: match.title };
+    }
+    return null;
+  });
   const [localAuctions, setLocalAuctions] = useState<Auction[]>(auctions);
+  const [logsModal, setLogsModal] = useState<{ id: string; title: string } | null>(null);
 
   // Check if current user is admin
   const isAdmin = user && isAdminUser(user);
@@ -46,6 +55,16 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
   useEffect(() => {
     setActiveTab(adminView);
   }, [adminView]);
+
+  // Restore catalog view from URL after auctions load (handles page refresh)
+  useEffect(() => {
+    if (initialCatalogEventId && !managingEventInventory && auctions.length > 0) {
+      const match = auctions.find(a => a.id === initialCatalogEventId);
+      if (match) {
+        setManagingEventInventory({ id: match.id, title: match.title });
+      }
+    }
+  }, [initialCatalogEventId, auctions]);
 
   // Handle tab changes with URL updates
   const handleTabChange = (tab: string) => {
@@ -454,8 +473,33 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
           <div className="space-y-6">
             <RecentlyRemovedFiles />
             <RecentlyRemovedItems />
-            <OrphanedRecordsCleanup />
-            <B2BucketCleanup />
+
+            <div>
+              <div className="mb-4">
+                <h2 className="text-lg font-bold text-white">Storage Cleanup</h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  Run these in order: first clean up the database, then clean up B2 to remove any physical files that no longer have a database record.
+                </p>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">1</span>
+                    <span className="text-sm font-semibold text-gray-200">Database Records Cleanup</span>
+                    <span className="text-xs text-gray-400">— remove orphaned rows from the database</span>
+                  </div>
+                  <OrphanedRecordsCleanup />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">2</span>
+                    <span className="text-sm font-semibold text-gray-200">B2 Bucket Cleanup</span>
+                    <span className="text-xs text-gray-400">— delete files from storage with no database record</span>
+                  </div>
+                  <B2BucketCleanup />
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -464,7 +508,10 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
           <EventItemsPage
             eventId={managingEventInventory.id}
             eventTitle={managingEventInventory.title}
-            onBack={() => setManagingEventInventory(null)}
+            onBack={() => {
+              setManagingEventInventory(null);
+              window.history.pushState({}, '', '/admin/auctions');
+            }}
           />
         )}
 
@@ -551,11 +598,50 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                           <div className="flex items-center justify-end space-x-2">
                             <button
-                              onClick={() => setManagingEventInventory({ id: auction.id, title: auction.title })}
+                              onClick={() => {
+                                setManagingEventInventory({ id: auction.id, title: auction.title });
+                                window.history.pushState({}, '', `/admin/auctions/event/${auction.id}`);
+                              }}
                               className="text-ironbound-grey-500 hover:text-ironbound-orange-600 transition-colors"
                               title="Open Catalog"
                             >
                               <BookOpen className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => window.open(`/clerk/${auction.id}`, '_blank', 'noopener,noreferrer')}
+                              className="text-ironbound-grey-500 hover:text-green-600 transition-colors"
+                              title="Live Clerk"
+                            >
+                              <Radio className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => window.open(`/projector/${auction.id}`, '_blank', 'noopener,noreferrer')}
+                              className="text-ironbound-grey-500 hover:text-ironbound-orange-500 transition-colors"
+                              title="Audience Projector"
+                            >
+                              <Monitor className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => window.open(`/auctioneer-projector/${auction.id}`, '_blank', 'noopener,noreferrer')}
+                              className="text-ironbound-grey-500 hover:text-blue-500 transition-colors"
+                              title="Auctioneer Projector"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                                <line x1="8" y1="21" x2="16" y2="21"/>
+                                <line x1="12" y1="17" x2="12" y2="21"/>
+                                <line x1="9" y1="13" x2="11.5" y2="10.5" strokeWidth="1.5"/>
+                                <line x1="11.5" y1="10.5" x2="15" y2="7" strokeWidth="1.5"/>
+                                <line x1="13" y1="9" x2="16.5" y2="12.5" strokeWidth="1.5"/>
+                                <line x1="14.5" y1="7.5" x2="16" y2="6" strokeWidth="1.5"/>
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => setLogsModal({ id: auction.id, title: auction.title })}
+                              className="text-ironbound-grey-500 hover:text-blue-600 transition-colors"
+                              title="Auction Logs"
+                            >
+                              <ScrollText className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => handlePublishToggle(auction)}
@@ -648,6 +734,14 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
         )}
 
       </div>
+
+      {logsModal && (
+        <AuctionLogsModal
+          eventId={logsModal.id}
+          eventTitle={logsModal.title}
+          onClose={() => setLogsModal(null)}
+        />
+      )}
     </div>
   );
 }

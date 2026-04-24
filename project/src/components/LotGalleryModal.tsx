@@ -8,8 +8,16 @@ interface MediaItem {
   isVideo: boolean;
 }
 
+export interface GalleryItem {
+  inventory_id: string;
+  title: string;
+  lot_number?: string;
+  image_url?: string | null;
+  barcode_asset_group_id?: string | null;
+}
+
 interface LotGalleryModalProps {
-  lot: CatalogLot;
+  lot: GalleryItem;
   onClose: () => void;
 }
 
@@ -78,6 +86,9 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
       if (items.length === 0 && lot.image_url) {
         items.push({ url: lot.image_url, isVideo: false });
       }
+
+      // Always show video first
+      items.sort((a, b) => (b.isVideo ? 1 : 0) - (a.isVideo ? 1 : 0));
 
       setMedia(items);
     } catch (err) {
@@ -153,7 +164,9 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
         <div className="relative bg-white w-full max-w-4xl flex flex-col max-h-screen">
           <div className="flex items-center justify-between px-5 py-4 border-b border-ironbound-grey-200 flex-shrink-0">
             <div>
-              <p className="text-xs font-semibold text-ironbound-orange-500 uppercase tracking-wide mb-0.5">{lot.lot_number}</p>
+              {lot.lot_number && (
+                <p className="text-xs font-semibold text-ironbound-orange-500 uppercase tracking-wide mb-0.5">{lot.lot_number}</p>
+              )}
               <h2 className="text-base font-bold text-ironbound-grey-900 leading-snug line-clamp-1">{lot.title}</h2>
             </div>
             <button
@@ -214,7 +227,7 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
           {imageCount > 0 && !loading && (
             <div className="px-5 py-2.5 border-t border-ironbound-grey-100 flex-shrink-0">
               <p className="text-xs text-ironbound-grey-400 text-center">
-                {imageCount} {imageCount === 1 ? 'photo' : 'photos'} — click any image to zoom
+                {imageCount} {imageCount === 1 ? 'item' : 'items'} — click any to view full screen
               </p>
             </div>
           )}

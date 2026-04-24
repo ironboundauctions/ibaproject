@@ -13,12 +13,16 @@ import AdminPanel from './components/AdminPanel';
 import Footer from './components/Footer';
 import AuthProvider from './components/AuthProvider';
 import PasswordReset from './components/PasswordReset';
+import LiveClerkPage from './components/LiveClerkPage';
+import AudienceProjectorPage from './components/AudienceProjectorPage';
+import AuctioneerProjectorPage from './components/AuctioneerProjectorPage';
+import ImageControllerPage from './components/ImageControllerPage';
 import { useAuth } from './hooks/useAuth';
 import { Auction } from './types/auction';
 import { AdminService } from './services/adminService';
 import { isAdminUser, AuthService } from './services/authService';
 
-type View = 'home' | 'auctions' | 'auction-detail' | 'event-catalog' | 'profile' | 'admin' | 'password-reset';
+type View = 'home' | 'auctions' | 'auction-detail' | 'event-catalog' | 'profile' | 'admin' | 'password-reset' | 'live-clerk' | 'projector' | 'auctioneer-projector' | 'image-controller';
 
 type AdminView = 'dashboard' | 'auctions' | 'create-event' | 'edit-event' | 'manage-lots' | 'create-lot' | 'edit-lot' | 'user-management' | 'admin-management' | 'create-admin' | 'create-auction' | 'consigners' | 'inventory' | 'admin-recovery' | 'recently-removed';
 
@@ -51,21 +55,25 @@ function AppContent() {
       } else if (path.startsWith('/admin')) {
         if (isAdminUser(user)) {
           setCurrentView('admin');
-          // Parse admin sub-routes
+          // Parse admin sub-routes - handle /admin/auctions/event/{id} specially
           const adminPath = path.replace('/admin', '') || '/dashboard';
-          const adminRoute = adminPath.substring(1) || 'dashboard';
 
-          const validAdminViews: AdminView[] = [
-            'dashboard', 'auctions', 'create-event', 'edit-event', 'manage-lots',
-            'create-lot', 'edit-lot', 'user-management', 'admin-management',
-            'create-admin', 'create-auction', 'consigners', 'inventory', 'admin-recovery',
-            'recently-removed'
-          ];
-
-          if (validAdminViews.includes(adminRoute as AdminView)) {
-            setAdminView(adminRoute as AdminView);
+          if (adminPath.startsWith('/auctions/event/')) {
+            setAdminView('auctions');
           } else {
-            setAdminView('dashboard');
+            const adminRoute = adminPath.substring(1) || 'dashboard';
+            const validAdminViews: AdminView[] = [
+              'dashboard', 'auctions', 'create-event', 'edit-event', 'manage-lots',
+              'create-lot', 'edit-lot', 'user-management', 'admin-management',
+              'create-admin', 'create-auction', 'consigners', 'inventory', 'admin-recovery',
+              'recently-removed'
+            ];
+
+            if (validAdminViews.includes(adminRoute as AdminView)) {
+              setAdminView(adminRoute as AdminView);
+            } else {
+              setAdminView('dashboard');
+            }
           }
         } else {
           // User not authorized for admin - redirect to home
@@ -91,6 +99,14 @@ function AppContent() {
         }
       } else if (path === '/auctions' || hash === '#auctions') {
         setCurrentView('auctions');
+      } else if (path.startsWith('/clerk/')) {
+        setCurrentView('live-clerk');
+      } else if (path.startsWith('/auctioneer-projector/')) {
+        setCurrentView('auctioneer-projector');
+      } else if (path.startsWith('/projector/')) {
+        setCurrentView('projector');
+      } else if (path.startsWith('/image-controller/')) {
+        setCurrentView('image-controller');
       } else if (path.startsWith('/event/')) {
         const id = path.replace('/event/', '').split('/')[0];
         if (id) { setSelectedEventId(id); setCurrentView('event-catalog'); }
@@ -222,6 +238,22 @@ function AppContent() {
 
   const showHero = currentView === 'home';
 
+  if (currentView === 'live-clerk') {
+    return <LiveClerkPage />;
+  }
+
+  if (currentView === 'projector') {
+    return <AudienceProjectorPage />;
+  }
+
+  if (currentView === 'auctioneer-projector') {
+    return <AuctioneerProjectorPage />;
+  }
+
+  if (currentView === 'image-controller') {
+    return <ImageControllerPage />;
+  }
+
   return (
     <div className="min-h-screen bg-ironbound-grey-500">
       <Header
@@ -285,6 +317,10 @@ function AppContent() {
           onAuctionsUpdate={setAuctions}
           adminView={adminView}
           onAdminViewChange={handleAdminViewChange}
+          initialCatalogEventId={(() => {
+            const m = window.location.pathname.match(/^\/admin\/auctions\/event\/([^/]+)/);
+            return m ? m[1] : null;
+          })()}
         />
       )}
 

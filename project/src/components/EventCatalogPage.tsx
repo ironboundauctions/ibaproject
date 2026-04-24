@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowLeft, MapPin, Calendar, Gavel, AlertCircle,
-  Radio, CheckCircle, Timer, Tag, Clock, Lock,
+  Radio, CheckCircle, Timer, Clock, Lock,
 } from 'lucide-react';
 import { PreBidService, CatalogLot } from '../services/preBidService';
 import { EventService } from '../services/eventService';
@@ -171,7 +171,7 @@ export default function EventCatalogPage({
   const infoItems = [
     event.location && { icon: MapPin, label: 'Location', value: event.location },
     { icon: Calendar, label: 'Starts', value: formatDate(event.start_date) },
-    event.bid_increment && { icon: Tag, label: 'Bid Increment', value: formatCurrency(event.bid_increment) },
+
     auctioneerName && { icon: Gavel, label: 'Auctioneer', value: auctioneerName },
   ].filter(Boolean) as { icon: any; label: string; value: string }[];
 

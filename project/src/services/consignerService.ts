@@ -68,7 +68,12 @@ export class ConsignorService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      if (error.code === '23505') {
+        throw new Error(`Customer number "${consignorData.customer_number}" is already in use. Please choose a different customer number or use "Generate New" to get an available one.`);
+      }
+      throw error;
+    }
 
     return {
       ...data,
@@ -94,7 +99,12 @@ export class ConsignorService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      if (error.code === '23505') {
+        throw new Error(`Customer number "${updates.customer_number}" is already assigned to another consignor. Please use a different customer number.`);
+      }
+      throw error;
+    }
 
     return {
       ...data,
@@ -117,8 +127,7 @@ export class ConsignorService {
 
     const { data: existingConsignors } = await supabase
       .from('consigners')
-      .select('customer_number')
-      .order('customer_number', { ascending: true });
+      .select('customer_number');
 
     const existingNumbers = new Set(
       (existingConsignors || []).map(c => c.customer_number).filter(Boolean)

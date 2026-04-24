@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2, Download, Tag, X } from 'lucide-react';
+import { Trash2, Download, X, Gavel } from 'lucide-react';
 
 interface BulkActionsProps {
   selectedCount: number;
@@ -7,6 +7,7 @@ interface BulkActionsProps {
   onBulkDelete: () => void;
   onBulkExport: () => void;
   onBulkStatusChange: (status: string) => void;
+  onBulkAssignToEvent?: () => void;
 }
 
 export default function BulkActions({
@@ -14,7 +15,8 @@ export default function BulkActions({
   onClearSelection,
   onBulkDelete,
   onBulkExport,
-  onBulkStatusChange
+  onBulkStatusChange,
+  onBulkAssignToEvent,
 }: BulkActionsProps) {
   if (selectedCount === 0) return null;
 
@@ -37,6 +39,17 @@ export default function BulkActions({
         <div className="h-6 w-px bg-ironbound-grey-300"></div>
 
         <div className="flex items-center space-x-2">
+          {onBulkAssignToEvent && (
+            <button
+              onClick={onBulkAssignToEvent}
+              className="flex items-center space-x-2 px-4 py-2 bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white rounded-lg text-sm font-medium transition-colors"
+              title="Assign selected items to an event"
+            >
+              <Gavel className="h-4 w-4" />
+              <span>Assign to Event</span>
+            </button>
+          )}
+
           <select
             onChange={(e) => {
               if (e.target.value) {
