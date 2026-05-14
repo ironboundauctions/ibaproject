@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Play } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw, Download, Image as ImageIcon, Play } from 'lucide-react';
 
 interface MediaItem {
   url: string;
@@ -10,317 +10,338 @@ interface ImageGalleryModalProps {
   images: string[] | MediaItem[];
   initialIndex?: number;
   onClose: () => void;
+  title?: string;
 }
 
-export default function ImageGalleryModal({ images, initialIndex = 0, onClose }: ImageGalleryModalProps) {
-  const [currentIndex, setCurrentIndex] = useState(initialIndex);
-
-  // Normalize images to MediaItem format
+export default function ImageGalleryModal({ images, initialIndex, onClose, title }: ImageGalleryModalProps) {
   const mediaItems: MediaItem[] = images.map(item =>
     typeof item === 'string' ? { url: item, isVideo: false } : item
   );
-  const currentItem = mediaItems[currentIndex];
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(
+    initialIndex !== undefined ? initialIndex : null
+  );
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const thumbnailRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const dragStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  // Back button closes the gallery
+  useEffect(() => {
+    history.pushState({ gallery: true }, '');
+    const handlePopState = () => onClose();
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      if (history.state?.gallery) history.back();
+    };
+  }, [onClose]);
 
   // Prevent body scroll when modal is open
   useEffect(() => {
     document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = '';
-    };
+    return () => { document.body.style.overflow = ''; };
   }, []);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (isFullscreen) {
-          setIsFullscreen(false);
-        } else {
-          onClose();
-        }
-      } else if (e.key === 'ArrowLeft') {
-        handlePrevious();
-      } else if (e.key === 'ArrowRight') {
-        handleNext();
+    const handler = (e: KeyboardEvent) => {
+      if (lightboxIndex === null) {
+        if (e.key === 'Escape') onClose();
+        return;
       }
+      if (e.key === 'Escape') closeLightbox();
+      if (e.key === 'ArrowLeft') navigateLightbox(-1);
+      if (e.key === 'ArrowRight') navigateLightbox(1);
+      if (e.key === '+' || e.key === '=') setZoom(z => Math.min(5, z + 0.5));
+      if (e.key === '-') setZoom(z => Math.max(1, z - 0.5));
     };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [lightboxIndex, mediaItems.length]);
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFullscreen, currentIndex]);
-
-  // Scroll thumbnail into view when currentIndex changes
-  useEffect(() => {
-    if (thumbnailRefs.current[currentIndex]) {
-      thumbnailRefs.current[currentIndex]?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-        inline: 'center'
-      });
-    }
-  }, [currentIndex]);
-
-  const handlePrevious = () => {
-    setCurrentIndex((prev) => (prev > 0 ? prev - 1 : mediaItems.length - 1));
-    resetZoom();
+  const openLightbox = (index: number) => {
+    setLightboxIndex(index);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
   };
 
-  const handleNext = () => {
-    setCurrentIndex((prev) => (prev < mediaItems.length - 1 ? prev + 1 : 0));
-    resetZoom();
+  const closeLightbox = () => {
+    setLightboxIndex(null);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
   };
 
-  const handleZoomIn = () => {
-    setZoomLevel((prev) => Math.min(prev + 0.5, 4));
-  };
-
-  const handleZoomOut = () => {
-    setZoomLevel((prev) => Math.max(prev - 0.5, 1));
-  };
-
-  const resetZoom = () => {
-    setZoomLevel(1);
-    setPanPosition({ x: 0, y: 0 });
-  };
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (zoomLevel > 1 && !isVideo) {
-      e.preventDefault();
-      setIsDragging(true);
-      setDragStart({ x: e.clientX - panPosition.x, y: e.clientY - panPosition.y });
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (isDragging && zoomLevel > 1) {
-      e.preventDefault();
-      setPanPosition({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y
-      });
-    }
-  };
-
-  const handleMouseUp = (e?: React.MouseEvent) => {
-    if (e) e.preventDefault();
-    setIsDragging(false);
-  };
-
-  // Add global mouse event listeners for smoother dragging
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      if (isDragging && zoomLevel > 1) {
-        e.preventDefault();
-        setPanPosition({
-          x: e.clientX - dragStart.x,
-          y: e.clientY - dragStart.y
-        });
-      }
-    };
-
-    const handleGlobalMouseUp = (e: MouseEvent) => {
-      e.preventDefault();
-      setIsDragging(false);
-    };
-
-    window.addEventListener('mousemove', handleGlobalMouseMove);
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-
-    return () => {
-      window.removeEventListener('mousemove', handleGlobalMouseMove);
-      window.removeEventListener('mouseup', handleGlobalMouseUp);
-    };
-  }, [isDragging, dragStart, zoomLevel]);
+  const navigateLightbox = useCallback((dir: number) => {
+    setLightboxIndex(prev => {
+      if (prev === null) return null;
+      return (prev + dir + mediaItems.length) % mediaItems.length;
+    });
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [mediaItems.length]);
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
-    e.stopPropagation();
-    if (isFullscreen && !isVideo) {
-      if (e.deltaY < 0) {
-        handleZoomIn();
-      } else {
-        handleZoomOut();
-      }
-    }
+    const delta = e.deltaY > 0 ? -0.2 : 0.2;
+    setZoom(z => Math.min(5, Math.max(1, z + delta)));
+    if (zoom <= 1) setPan({ x: 0, y: 0 });
   };
 
-  const handleImageClick = () => {
-    setIsFullscreen(true);
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (zoom <= 1) return;
+    setIsDragging(true);
+    dragStart.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || !dragStart.current) return;
+    setPan({
+      x: dragStart.current.px + (e.clientX - dragStart.current.x),
+      y: dragStart.current.py + (e.clientY - dragStart.current.y),
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    dragStart.current = null;
+  };
+
+  const resetZoom = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
   };
 
   if (!images || images.length === 0) return null;
-  const isVideo = currentItem.isVideo;
+
+  const count = mediaItems.length;
+  const cols = count === 1 ? 1 : 2;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black bg-opacity-90 flex items-center justify-center">
-      <div className={`${isFullscreen ? 'fixed inset-0' : 'max-w-6xl w-full mx-4'} flex flex-col`}>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 text-white">
-          <div className="text-lg font-medium">
-            {currentIndex + 1} of {mediaItems.length} {isVideo ? '(Video)' : ''}
+    <>
+      <div
+        className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-stretch justify-center"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      >
+        <div className="relative bg-white w-full max-w-4xl flex flex-col max-h-screen">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-ironbound-grey-200 flex-shrink-0">
+            <div>
+              {title && (
+                <h2 className="text-base font-bold text-ironbound-grey-900 leading-snug line-clamp-1">{title}</h2>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="ml-4 p-2 rounded-xl hover:bg-ironbound-grey-100 text-ironbound-grey-500 hover:text-ironbound-grey-900 transition-colors flex-shrink-0"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
-          <button
-            onClick={isFullscreen ? () => setIsFullscreen(false) : onClose}
-            className="p-2 hover:bg-white hover:bg-opacity-20 rounded-lg transition-colors"
-          >
-            <X className="h-6 w-6" />
-          </button>
-        </div>
 
-        {/* Main Image Display */}
-        <div
-          className={`flex-1 relative flex items-center justify-center ${isFullscreen ? 'bg-black' : 'bg-gray-900 rounded-lg'} overflow-hidden`}
-          onWheel={handleWheel}
-        >
-          {/* Navigation Arrows */}
-          {mediaItems.length > 1 && (
-            <>
-              <button
-                onClick={handlePrevious}
-                className="absolute left-4 z-10 p-3 bg-black bg-opacity-50 hover:bg-opacity-75 text-white rounded-full transition-all"
-              >
-                <ChevronLeft className="h-6 w-6" />
-              </button>
-              <button
-                onClick={handleNext}
-                className="absolute right-4 z-10 p-3 bg-black bg-opacity-50 hover:bg-opacity-75 text-white rounded-full transition-all"
-              >
-                <ChevronRight className="h-6 w-6" />
-              </button>
-            </>
-          )}
-
-          {/* Media Display */}
-          <div
-            className={`relative ${isFullscreen ? 'w-full h-full' : 'w-full h-[60vh]'} flex items-center justify-center`}
-          >
-            {isVideo ? (
-              <video
-                src={currentItem.url}
-                controls
-                disablePictureInPicture
-                controlsList="nodownload nofullscreen noremoteplayback"
-                className="max-w-full max-h-full object-contain"
-                style={{
-                  width: isFullscreen ? '100%' : 'auto',
-                  height: isFullscreen ? '100%' : 'auto'
-                }}
-                onError={(e) => {
-                  console.error('Video failed to load:', currentItem.url);
-                }}
-              />
+          {/* Grid */}
+          <div className="flex-1 overflow-y-auto p-5">
+            {mediaItems.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-64 gap-3 text-ironbound-grey-400">
+                <ImageIcon className="h-12 w-12 opacity-30" />
+                <p className="text-sm">No images available.</p>
+              </div>
             ) : (
-              <img
-                src={currentItem.url}
-                alt={`Image ${currentIndex + 1}`}
-                draggable={false}
-                className={`max-w-full max-h-full object-contain select-none ${isDragging ? 'cursor-grabbing' : zoomLevel > 1 ? 'cursor-grab' : 'cursor-zoom-in'}`}
-                style={{
-                  transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
-                  transition: isDragging ? 'none' : 'transform 0.1s ease-out'
-                }}
-                onClick={() => !isFullscreen && !isDragging && handleImageClick()}
-                onMouseDown={handleMouseDown}
-                onError={(e) => {
-                  console.error('Image failed to load:', currentItem.url);
-                }}
-              />
+              <div className={`grid gap-3 ${cols === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                {mediaItems.map((item, i) => (
+                  <div
+                    key={i}
+                    className="relative group overflow-hidden rounded-xl bg-ironbound-grey-100 cursor-pointer"
+                    style={{ aspectRatio: '4/3' }}
+                    onClick={() => openLightbox(i)}
+                  >
+                    {item.isVideo ? (
+                      <div className="w-full h-full bg-ironbound-grey-900 flex items-center justify-center">
+                        <video
+                          src={item.url}
+                          className="w-full h-full object-cover opacity-60"
+                          muted
+                          preload="metadata"
+                        />
+                      </div>
+                    ) : (
+                      <img
+                        src={item.url}
+                        alt={`Photo ${i + 1}`}
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        loading={i < 4 ? 'eager' : 'lazy'}
+                      />
+                    )}
+                    {item.isVideo ? (
+                      <>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                          <div className="w-16 h-16 rounded-full bg-ironbound-orange-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-200 shadow-xl">
+                            <Play className="h-8 w-8 text-white fill-white ml-1" />
+                          </div>
+                          <span className="text-white text-sm font-semibold tracking-widest uppercase drop-shadow">Video</span>
+                        </div>
+                        <div className="absolute top-2 left-2 bg-ironbound-orange-500 text-white text-xs font-bold px-2.5 py-1 rounded-full tracking-wide flex items-center gap-1 shadow">
+                          <Play className="h-2.5 w-2.5 fill-white" />
+                          VIDEO
+                        </div>
+                      </>
+                    ) : (
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-200 flex items-center justify-center">
+                        <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 drop-shadow-lg" />
+                      </div>
+                    )}
+                    <div className="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-sm">
+                      {i + 1} / {count}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
-          {/* Zoom Controls - only for images */}
-          {isFullscreen && !isVideo && (
-            <div className="absolute bottom-4 right-4 flex items-center space-x-2 bg-black bg-opacity-50 rounded-lg p-2">
-              <button
-                onClick={handleZoomOut}
-                disabled={zoomLevel <= 1}
-                className="p-2 hover:bg-white hover:bg-opacity-20 rounded text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <ZoomOut className="h-5 w-5" />
-              </button>
-              <span className="text-white text-sm font-medium min-w-[4rem] text-center">
-                {Math.round(zoomLevel * 100)}%
-              </span>
-              <button
-                onClick={handleZoomIn}
-                disabled={zoomLevel >= 4}
-                className="p-2 hover:bg-white hover:bg-opacity-20 rounded text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <ZoomIn className="h-5 w-5" />
-              </button>
-              <button
-                onClick={resetZoom}
-                disabled={zoomLevel === 1}
-                className="ml-2 px-3 py-2 hover:bg-white hover:bg-opacity-20 rounded text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                Reset
-              </button>
+          {count > 0 && (
+            <div className="px-5 py-2.5 border-t border-ironbound-grey-100 flex-shrink-0">
+              <p className="text-xs text-ironbound-grey-400 text-center">
+                {count} {count === 1 ? 'item' : 'items'} — click any to view full screen
+              </p>
             </div>
           )}
         </div>
+      </div>
 
-        {/* Thumbnail Strip */}
-        {!isFullscreen && mediaItems.length > 1 && (
-          <div className="mt-4 p-4">
-            <div className="flex items-center justify-start space-x-2 overflow-x-auto pb-2">
-              {mediaItems.map((item, index) => (
-                <button
-                  key={index}
-                  ref={(el) => (thumbnailRefs.current[index] = el)}
-                  onClick={() => {
-                    setCurrentIndex(index);
-                    resetZoom();
-                  }}
-                  className={`relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 transition-all ${
-                    index === currentIndex
-                      ? 'border-ironbound-orange-500 ring-2 ring-ironbound-orange-500 ring-opacity-50'
-                      : 'border-gray-600 hover:border-gray-400'
-                  }`}
+      {/* Lightbox */}
+      {lightboxIndex !== null && mediaItems[lightboxIndex] && (
+        <div className="fixed inset-0 bg-black/95 flex flex-col" style={{ zIndex: 60 }}>
+          <div className="flex items-center justify-between px-4 py-3 flex-shrink-0">
+            <p className="text-white/60 text-sm">
+              {lightboxIndex + 1} / {count}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setZoom(z => Math.min(5, z + 0.5))}
+                className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+                title="Zoom in"
+              >
+                <ZoomIn className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => setZoom(z => Math.max(1, z - 0.5))}
+                disabled={zoom <= 1}
+                className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors disabled:opacity-40"
+                title="Zoom out"
+              >
+                <ZoomOut className="h-4 w-4" />
+              </button>
+              <button
+                onClick={resetZoom}
+                disabled={zoom === 1}
+                className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors disabled:opacity-40"
+                title="Reset zoom"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
+              {!mediaItems[lightboxIndex].isVideo && (
+                <a
+                  href={mediaItems[lightboxIndex].url}
+                  download
+                  target="_blank"
+                  rel="noreferrer"
+                  className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+                  title="Open original"
                 >
-                  {item.isVideo ? (
-                    <>
-                      <video
-                        src={item.url}
-                        className="w-full h-full object-cover"
-                        disablePictureInPicture
-                        controlsList="nodownload nofullscreen noremoteplayback"
-                      />
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <div className="bg-black bg-opacity-60 rounded-full p-1">
-                          <Play className="h-4 w-4 text-white fill-current" />
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <img
-                      src={item.url}
-                      alt={`Thumbnail ${index + 1}`}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        e.currentTarget.src = 'https://images.pexels.com/photos/1078884/pexels-photo-1078884.jpeg?auto=compress&cs=tinysrgb&w=800&h=600&dpr=2';
-                      }}
-                    />
-                  )}
-                </button>
-              ))}
+                  <Download className="h-4 w-4" />
+                </a>
+              )}
+              <button
+                onClick={closeLightbox}
+                className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors ml-1"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
           </div>
-        )}
 
-        {/* Instructions */}
-        {!isFullscreen && (
-          <div className="text-center text-white text-sm p-4 opacity-75">
-            Use arrow keys to navigate {!isVideo && '• Click image for fullscreen'} • ESC to close
+          <div
+            className="flex-1 relative overflow-hidden flex items-center justify-center"
+            onWheel={handleWheel}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            style={{ cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default' }}
+          >
+            {mediaItems[lightboxIndex].isVideo ? (
+              <video
+                src={mediaItems[lightboxIndex].url}
+                controls
+                autoPlay
+                className="max-w-full max-h-full rounded-lg"
+                style={{ maxHeight: 'calc(100vh - 120px)' }}
+              />
+            ) : (
+              <img
+                ref={imgRef}
+                src={mediaItems[lightboxIndex].url}
+                alt={`Photo ${lightboxIndex + 1}`}
+                draggable={false}
+                className="max-w-full max-h-full rounded-lg select-none transition-transform duration-100"
+                style={{
+                  transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+                  maxHeight: 'calc(100vh - 120px)',
+                  cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
+                }}
+                onClick={() => zoom === 1 && setZoom(2)}
+              />
+            )}
+
+            {count > 1 && (
+              <>
+                <button
+                  onClick={() => navigateLightbox(-1)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors backdrop-blur-sm"
+                >
+                  <ChevronLeft className="h-6 w-6" />
+                </button>
+                <button
+                  onClick={() => navigateLightbox(1)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-3 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors backdrop-blur-sm"
+                >
+                  <ChevronRight className="h-6 w-6" />
+                </button>
+              </>
+            )}
           </div>
-        )}
-      </div>
-    </div>
+
+          {count > 1 && (
+            <div className="flex-shrink-0 px-4 py-3 overflow-x-auto">
+              <div className="flex gap-2 justify-center">
+                {mediaItems.map((item, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setLightboxIndex(i); setZoom(1); setPan({ x: 0, y: 0 }); }}
+                    className={`flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${
+                      i === lightboxIndex
+                        ? 'border-ironbound-orange-500 opacity-100'
+                        : 'border-transparent opacity-50 hover:opacity-80'
+                    }`}
+                  >
+                    {item.isVideo ? (
+                      <div className="relative w-full h-full">
+                        <video src={item.url} className="w-full h-full object-cover" muted />
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                          <Play className="h-4 w-4 text-white fill-white" />
+                        </div>
+                      </div>
+                    ) : (
+                      <img src={item.url} alt="" className="w-full h-full object-cover" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }

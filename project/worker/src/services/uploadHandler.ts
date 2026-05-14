@@ -482,7 +482,9 @@ export class UploadHandler {
               logger.error('Failed to process IronDrive file', { sourceKey, assetGroupId, error });
               try {
                 await this.storage.deleteAssetGroup(assetGroupId);
-              } catch {}
+              } catch (cleanupError) {
+                logger.error('Failed to cleanup B2 files for failed IronDrive upload', { assetGroupId, error: cleanupError });
+              }
               throw error;
             }
           })
@@ -534,12 +536,12 @@ export class UploadHandler {
 
       for (const assetGroupId of assetGroupIds) {
         try {
-          // Delete from B2
-          await this.storage.deleteAssetGroup(assetGroupId);
-
-          // Delete database records
+          // Fetch DB records first to resolve itemId for targeted B2 path
           const filesToDelete = await this.db.getFilesByAssetGroup(assetGroupId);
+          const itemId = filesToDelete.find(f => f.item_id)?.item_id || undefined;
           const fileIds = filesToDelete.map(f => f.id);
+
+          await this.storage.deleteAssetGroup(assetGroupId, itemId);
 
           if (fileIds.length > 0) {
             await this.db.deleteFiles(fileIds);

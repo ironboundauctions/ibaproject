@@ -3,9 +3,10 @@ import { Calendar, MapPin, Gavel, ArrowRight } from 'lucide-react';
 
 interface HeroProps {
   onGetStarted: () => void;
+  onRegisterClick?: () => void;
 }
 
-export default function Hero({ onGetStarted }: HeroProps) {
+export default function Hero({ onGetStarted, onRegisterClick }: HeroProps) {
   return (
     <section className="relative bg-gradient-to-br from-ironbound-grey-700 via-ironbound-grey-600 to-ironbound-grey-700 text-white overflow-hidden">
       {/* Background Pattern */}
@@ -48,7 +49,10 @@ export default function Hero({ onGetStarted }: HeroProps) {
                 <span>Browse All Events</span>
                 <ArrowRight className="h-5 w-5" />
               </button>
-              <button className="border-2 border-white/30 hover:border-ironbound-orange-400 hover:bg-ironbound-orange-400/10 text-white px-8 py-4 rounded-lg font-semibold text-lg transition-all duration-300">
+              <button
+                onClick={onRegisterClick}
+                className="border-2 border-white/30 hover:border-ironbound-orange-400 hover:bg-ironbound-orange-400/10 text-white px-8 py-4 rounded-lg font-semibold text-lg transition-all duration-300"
+              >
                 Register to Bid
               </button>
             </div>

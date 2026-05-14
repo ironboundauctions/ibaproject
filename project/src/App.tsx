@@ -15,14 +15,18 @@ import AuthProvider from './components/AuthProvider';
 import PasswordReset from './components/PasswordReset';
 import LiveClerkPage from './components/LiveClerkPage';
 import AudienceProjectorPage from './components/AudienceProjectorPage';
+import AudienceVideoProjectorPage from './components/AudienceVideoProjectorPage';
 import AuctioneerProjectorPage from './components/AuctioneerProjectorPage';
 import ImageControllerPage from './components/ImageControllerPage';
+import AudienceStreamPage from './components/AudienceStreamPage';
+import AuctioneerBroadcastPage from './components/AuctioneerBroadcastPage';
+import LiveBiddingPage from './components/LiveBiddingPage';
 import { useAuth } from './hooks/useAuth';
 import { Auction } from './types/auction';
 import { AdminService } from './services/adminService';
 import { isAdminUser, AuthService } from './services/authService';
 
-type View = 'home' | 'auctions' | 'auction-detail' | 'event-catalog' | 'profile' | 'admin' | 'password-reset' | 'live-clerk' | 'projector' | 'auctioneer-projector' | 'image-controller';
+type View = 'home' | 'auctions' | 'auction-detail' | 'event-catalog' | 'profile' | 'admin' | 'password-reset' | 'live-clerk' | 'projector' | 'auctioneer-projector' | 'image-controller' | 'video-projector' | 'stream' | 'broadcast' | 'live-bid';
 
 type AdminView = 'dashboard' | 'auctions' | 'create-event' | 'edit-event' | 'manage-lots' | 'create-lot' | 'edit-lot' | 'user-management' | 'admin-management' | 'create-admin' | 'create-auction' | 'consigners' | 'inventory' | 'admin-recovery' | 'recently-removed';
 
@@ -36,6 +40,7 @@ function AppContent() {
   const [filteredAuctions, setFilteredAuctions] = useState<Auction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [sortBy, setSortBy] = useState('ending_soon');
@@ -105,8 +110,18 @@ function AppContent() {
         setCurrentView('auctioneer-projector');
       } else if (path.startsWith('/projector/')) {
         setCurrentView('projector');
+      } else if (path.startsWith('/video-projector/')) {
+        setCurrentView('video-projector');
       } else if (path.startsWith('/image-controller/')) {
         setCurrentView('image-controller');
+      } else if (path.startsWith('/stream/')) {
+        setCurrentView('stream');
+      } else if (path.startsWith('/broadcast/')) {
+        setCurrentView('broadcast');
+      } else if (path.startsWith('/live-bid/')) {
+        const id = path.replace('/live-bid/', '').split('/')[0];
+        if (id) { setSelectedEventId(id); setCurrentView('live-bid'); }
+        else setCurrentView('auctions');
       } else if (path.startsWith('/event/')) {
         const id = path.replace('/event/', '').split('/')[0];
         if (id) { setSelectedEventId(id); setCurrentView('event-catalog'); }
@@ -250,8 +265,33 @@ function AppContent() {
     return <AuctioneerProjectorPage />;
   }
 
+  if (currentView === 'video-projector') {
+    return <AudienceVideoProjectorPage />;
+  }
+
   if (currentView === 'image-controller') {
     return <ImageControllerPage />;
+  }
+
+  if (currentView === 'stream') {
+    return <AudienceStreamPage />;
+  }
+
+  if (currentView === 'broadcast') {
+    return <AuctioneerBroadcastPage />;
+  }
+
+  if (currentView === 'live-bid' && selectedEventId) {
+    return (
+      <LiveBiddingPage
+        eventId={selectedEventId}
+        onBack={() => {
+          setCurrentView('event-catalog');
+          window.history.pushState({}, '', `/event/${selectedEventId}`);
+        }}
+        onAuthRequired={() => setShowAuthModal(true)}
+      />
+    );
   }
 
   return (
@@ -265,9 +305,12 @@ function AppContent() {
 
       {showHero && (
         <>
-          <Hero onGetStarted={() => setCurrentView('auctions')} />
+          <Hero
+            onGetStarted={() => setCurrentView('auctions')}
+            onRegisterClick={() => { setAuthModalMode('signup'); setShowAuthModal(true); }}
+          />
           <FeaturedCategories onCategorySelect={handleCategorySelect} />
-          <TrustIndicators />
+          <TrustIndicators onRegisterClick={() => { setAuthModalMode('signup'); setShowAuthModal(true); }} />
         </>
       )}
 
@@ -335,7 +378,10 @@ function AppContent() {
       <Footer />
 
       {showAuthModal && (
-        <AuthModal onClose={() => setShowAuthModal(false)} />
+        <AuthModal
+          initialMode={authModalMode}
+          onClose={() => { setShowAuthModal(false); setAuthModalMode('signin'); }}
+        />
       )}
     </div>
   );

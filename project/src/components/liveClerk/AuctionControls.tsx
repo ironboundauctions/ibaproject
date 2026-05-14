@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Pause, Square, RotateCcw } from 'lucide-react';
+import { Play, Pause, Square, RotateCcw, Radio, RadioTower } from 'lucide-react';
 import { SessionStatus } from '../../services/liveClerkService';
 
 interface AuctionControlsProps {
@@ -17,6 +17,9 @@ interface AuctionControlsProps {
   onPostWithOneClickChange: (val: boolean) => void;
   decrement: boolean;
   onDecrementChange: (val: boolean) => void;
+  eventIsLive: boolean;
+  onGoLive: () => void;
+  onEndLive: () => void;
 }
 
 export default function AuctionControls({
@@ -34,6 +37,9 @@ export default function AuctionControls({
   onPostWithOneClickChange,
   decrement,
   onDecrementChange,
+  eventIsLive,
+  onGoLive,
+  onEndLive,
 }: AuctionControlsProps) {
   const isIdle = sessionStatus === 'idle';
   const isRunning = sessionStatus === 'running';
@@ -42,6 +48,34 @@ export default function AuctionControls({
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Online bidding live toggle */}
+      <div className="pb-3 border-b border-ironbound-grey-700">
+        <p className="text-xs text-ironbound-grey-500 uppercase tracking-wider mb-1.5 font-semibold">Online Bidding</p>
+        <button
+          onClick={eventIsLive ? onEndLive : onGoLive}
+          className={`w-full flex items-center justify-center gap-2 py-2.5 font-bold text-sm rounded-lg transition-colors border ${
+            eventIsLive
+              ? 'bg-green-700 hover:bg-ironbound-grey-700 text-white hover:text-ironbound-grey-300 border-green-600 hover:border-ironbound-grey-600'
+              : 'bg-ironbound-grey-700 hover:bg-green-700 text-ironbound-grey-300 hover:text-white border-ironbound-grey-600 hover:border-green-600'
+          }`}
+        >
+          {eventIsLive ? (
+            <>
+              <span className="relative flex h-2 w-2 flex-shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400"></span>
+              </span>
+              Live Bidding On
+            </>
+          ) : (
+            <>
+              <RadioTower className="h-4 w-4" />
+              Live Bidding Off
+            </>
+          )}
+        </button>
+      </div>
+
       <div className="flex flex-col gap-2">
         {isIdle && (
           <button

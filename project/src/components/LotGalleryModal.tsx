@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw, Download, Image as ImageIcon } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw, Download, Image as ImageIcon, Play } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { CatalogLot } from '../services/preBidService';
 
@@ -30,6 +30,18 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  // Push a history entry so the back button closes the gallery instead of navigating away
+  useEffect(() => {
+    history.pushState({ gallery: true }, '');
+    const handlePopState = () => onClose();
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      // If the modal was closed via the X button (not back), clean up the extra history entry
+      if (history.state?.gallery) history.back();
+    };
+  }, [onClose]);
 
   useEffect(() => {
     loadMedia();
@@ -87,10 +99,12 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
         items.push({ url: lot.image_url, isVideo: false });
       }
 
-      // Always show video first
-      items.sort((a, b) => (b.isVideo ? 1 : 0) - (a.isVideo ? 1 : 0));
+      // Videos always first, then images in display_order
+      const videos = items.filter(it => it.isVideo);
+      const images = items.filter(it => !it.isVideo);
+      const sortedItems = [...videos, ...images];
 
-      setMedia(items);
+      setMedia(sortedItems);
     } catch (err) {
       console.error('[GALLERY] Error loading media:', err);
       if (lot.image_url) setMedia([{ url: lot.image_url, isVideo: false }]);
@@ -198,12 +212,14 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
                     onClick={() => openLightbox(i)}
                   >
                     {item.isVideo ? (
-                      <video
-                        src={item.url}
-                        className="w-full h-full object-cover"
-                        muted
-                        preload="metadata"
-                      />
+                      <div className="w-full h-full bg-ironbound-grey-900 flex items-center justify-center">
+                        <video
+                          src={item.url}
+                          className="w-full h-full object-cover opacity-60"
+                          muted
+                          preload="metadata"
+                        />
+                      </div>
                     ) : (
                       <img
                         src={item.url}
@@ -212,9 +228,24 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
                         loading={i < 4 ? 'eager' : 'lazy'}
                       />
                     )}
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-200 flex items-center justify-center">
-                      <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 drop-shadow-lg" />
-                    </div>
+                    {item.isVideo ? (
+                      <>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                          <div className="w-16 h-16 rounded-full bg-ironbound-orange-500 flex items-center justify-center group-hover:scale-110 transition-transform duration-200 shadow-xl">
+                            <Play className="h-8 w-8 text-white fill-white ml-1" />
+                          </div>
+                          <span className="text-white text-sm font-semibold tracking-widest uppercase drop-shadow">Video</span>
+                        </div>
+                        <div className="absolute top-2 left-2 bg-ironbound-orange-500 text-white text-xs font-bold px-2.5 py-1 rounded-full tracking-wide flex items-center gap-1 shadow">
+                          <Play className="h-2.5 w-2.5 fill-white" />
+                          VIDEO
+                        </div>
+                      </>
+                    ) : (
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-200 flex items-center justify-center">
+                        <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 drop-shadow-lg" />
+                      </div>
+                    )}
                     <div className="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-sm">
                       {i + 1} / {imageCount}
                     </div>
@@ -353,7 +384,12 @@ export default function LotGalleryModal({ lot, onClose }: LotGalleryModalProps) 
                     }`}
                   >
                     {item.isVideo ? (
-                      <video src={item.url} className="w-full h-full object-cover" muted />
+                      <div className="relative w-full h-full">
+                        <video src={item.url} className="w-full h-full object-cover" muted />
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                          <Play className="h-4 w-4 text-white fill-white" />
+                        </div>
+                      </div>
                     ) : (
                       <img src={item.url} alt="" className="w-full h-full object-cover" />
                     )}

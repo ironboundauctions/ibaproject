@@ -150,6 +150,30 @@ export class EventService {
     return data;
   }
 
+  static async activateEvent(id: string): Promise<any> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .update({ status: 'active', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  static async deactivateEvent(id: string): Promise<any> {
+    const { data, error } = await supabase
+      .from('auction_events')
+      .update({ status: 'published', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
   static async deleteAuctionEvent(id: string): Promise<void> {
     const { error } = await supabase
       .from('auction_events')

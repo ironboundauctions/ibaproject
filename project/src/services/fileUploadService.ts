@@ -190,22 +190,10 @@ export class FileUploadService {
         formData.append('file', file);
         formData.append('item_id', itemId);
 
-        // Use AbortController only for connection timeout (30s).
-        // Once the upload starts transferring, we let it run until completion
-        // regardless of file size.
-        const connectController = new AbortController();
-        const connectTimeout = setTimeout(() => connectController.abort(), 30_000);
-
-        let response: Response;
-        try {
-          response = await fetch(`${workerUrl}/api/upload-and-process`, {
-            method: 'POST',
-            body: formData,
-            signal: connectController.signal,
-          });
-        } finally {
-          clearTimeout(connectTimeout);
-        }
+        const response = await fetch(`${workerUrl}/api/upload-and-process`, {
+          method: 'POST',
+          body: formData,
+        });
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Upload failed' }));

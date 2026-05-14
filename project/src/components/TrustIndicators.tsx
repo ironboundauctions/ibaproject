@@ -1,7 +1,11 @@
 import React from 'react';
 import { Shield, Award, Users, Clock, CheckCircle, Truck } from 'lucide-react';
 
-export default function TrustIndicators() {
+interface TrustIndicatorsProps {
+  onRegisterClick?: () => void;
+}
+
+export default function TrustIndicators({ onRegisterClick }: TrustIndicatorsProps) {
   const features = [
     {
       icon: Shield,
@@ -117,7 +121,10 @@ export default function TrustIndicators() {
               No hidden fees, transparent bidding, and professional support.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-8 py-3 rounded-lg font-semibold transition-colors shadow-md">
+              <button
+                onClick={onRegisterClick}
+                className="bg-ironbound-orange-500 hover:bg-ironbound-orange-600 text-white px-8 py-3 rounded-lg font-semibold transition-colors shadow-md"
+              >
                 Register to Bid
               </button>
               <button className="border-2 border-ironbound-orange-500 text-ironbound-orange-500 hover:bg-ironbound-orange-500 hover:text-white px-8 py-3 rounded-lg font-semibold transition-colors">

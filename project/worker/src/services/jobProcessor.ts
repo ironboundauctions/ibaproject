@@ -149,9 +149,9 @@ export class JobProcessor {
       await this.db.markJobCompleted(
         job.id,
         job.file_id,
+        '',
         thumbUrl,
-        displayUrl,
-        videoUrl
+        displayUrl
       );
 
       logger.info('Video processed successfully with thumbnail', {
@@ -173,7 +173,7 @@ export class JobProcessor {
         job.file_id,
         '',
         '',
-        videoUrl
+        ''
       );
 
       logger.info('Video processed successfully without thumbnail', {

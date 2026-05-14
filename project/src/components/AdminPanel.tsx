@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, Plus, CreditCard as Edit, Trash2, Eye, BarChart3, Users, Gavel, DollarSign, List, UserPlus, Shield, Package, User, Key, Mail, Lock, X, Globe, EyeOff, BookOpen, Info, Radio, Monitor, ScrollText } from 'lucide-react';
+import { ArrowLeft, Plus, CreditCard as Edit, Trash2, Eye, BarChart3, Users, Gavel, DollarSign, List, UserPlus, Shield, Package, User, Key, Mail, Lock, X, Globe, EyeOff, BookOpen, Info, Radio, Monitor, ScrollText, Video, Wifi } from 'lucide-react';
 import { Auction } from '../types/auction';
 import { AdminStats } from '../types/admin';
 import { AdminService } from '../services/adminService';
@@ -635,6 +635,20 @@ export default function AdminPanel({ onBack, auctions, onAuctionsUpdate, adminVi
                                 <line x1="13" y1="9" x2="16.5" y2="12.5" strokeWidth="1.5"/>
                                 <line x1="14.5" y1="7.5" x2="16" y2="6" strokeWidth="1.5"/>
                               </svg>
+                            </button>
+                            <button
+                              onClick={() => window.open(`/video-projector/${auction.id}`, '_blank', 'noopener,noreferrer')}
+                              className="text-ironbound-grey-500 hover:text-ironbound-orange-500 transition-colors"
+                              title="Audience Video Projector"
+                            >
+                              <Video className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => window.open(`/broadcast/${auction.id}`, '_blank', 'noopener,noreferrer')}
+                              className="text-ironbound-grey-500 hover:text-cyan-500 transition-colors"
+                              title="Live Stream (Broadcast & Viewer)"
+                            >
+                              <Wifi className="h-4 w-4" />
                             </button>
                             <button
                               onClick={() => setLogsModal({ id: auction.id, title: auction.title })}

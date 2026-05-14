@@ -994,7 +994,7 @@ export default function GlobalInventoryManagement() {
       {showGallery && (
         <ImageGalleryModal
           images={galleryImages}
-          initialIndex={0}
+
           onClose={() => setShowGallery(false)}
         />
       )}

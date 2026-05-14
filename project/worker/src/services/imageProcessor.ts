@@ -5,6 +5,7 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
+import crypto from 'crypto';
 
 // Try to find ffmpeg binary path
 try {
@@ -106,8 +107,9 @@ export class ImageProcessor {
     logger.debug('Generating video thumbnail', { size: videoBuffer.length });
 
     const tempDir = tmpdir();
-    const videoPath = join(tempDir, `video-${Date.now()}.mp4`);
-    const thumbnailPath = join(tempDir, `thumb-${Date.now()}.png`);
+    const uniqueId = crypto.randomUUID();
+    const videoPath = join(tempDir, `video-${uniqueId}.mp4`);
+    const thumbnailPath = join(tempDir, `thumb-${uniqueId}.png`);
 
     try {
       logger.debug('Writing video to temp file', { videoPath, size: videoBuffer.length });

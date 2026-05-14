@@ -5,6 +5,7 @@ import { formatCurrency } from '../../utils/formatters';
 export interface BidSnapshot {
   current_bid: number;
   asking_price: number;
+  current_high_bidder_id: string | null;
 }
 
 interface BidUndoPanelProps {

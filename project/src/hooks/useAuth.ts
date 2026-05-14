@@ -2,10 +2,19 @@ import { useState, useEffect, createContext, useContext } from 'react';
 import { AuthUser } from '../types/auction';
 import { AuthService } from '../services/authService';
 
+interface RegisterExtras {
+  phone?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+}
+
 interface AuthContextType {
   user: AuthUser | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, extras?: RegisterExtras) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
   isInitialized: boolean;
@@ -65,17 +74,16 @@ export function useAuthProvider() {
     }
   };
 
-  const register = async (name: string, email: string, password: string) => {
+  const register = async (name: string, email: string, password: string, extras?: RegisterExtras) => {
     setIsLoading(true);
     try {
-      const result = await AuthService.signUp(email, password, name);
+      const result = await AuthService.signUp(email, password, name, extras);
 
-      // If signup requires confirmation, don't set user and throw the result
       if (result.requiresConfirmation) {
         throw new Error(`CONFIRMATION_REQUIRED:${result.message}`);
       }
 
-      setUser(result);
+      setUser(result as AuthUser);
     } catch (error) {
       throw error;
     } finally {

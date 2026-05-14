@@ -165,7 +165,7 @@ export default function EventCatalogPage({
 
   const joinButtonDisabled = !isLive;
   const joinButtonTitle = isLive
-    ? `Join ${auctionType === 'timed' ? 'Timed' : 'Live'} Auction`
+    ? 'Join Live Auction'
     : 'Auction Not Yet Started';
 
   const infoItems = [
@@ -237,19 +237,22 @@ export default function EventCatalogPage({
               <button
                 onClick={() => {
                   if (!isLive) return;
-                  if (!user) { onAuthRequired(); return; }
-                  onJoinLive?.(eventId, auctionType);
+                  window.history.pushState({}, '', `/live-bid/${eventId}`);
+                  window.dispatchEvent(new PopStateEvent('popstate'));
                 }}
                 disabled={joinButtonDisabled}
                 title={joinButtonDisabled ? 'Auction has not started yet' : undefined}
                 className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all ${
                   isLive
-                    ? 'bg-red-600 hover:bg-red-700 text-white shadow-lg hover:shadow-red-700/30 animate-pulse-subtle'
-                    : 'bg-white/10 text-ironbound-grey-400 cursor-not-allowed border border-white/10'
+                    ? 'bg-green-600 hover:bg-green-700 text-white shadow-lg hover:shadow-green-700/30'
+                    : 'bg-white/10 text-ironbound-grey-500 cursor-not-allowed border border-white/10'
                 }`}
               >
                 {isLive ? (
-                  <Radio className="h-4 w-4 animate-pulse" />
+                  <span className="relative flex h-2 w-2 flex-shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-300 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-300"></span>
+                  </span>
                 ) : (
                   <Lock className="h-4 w-4" />
                 )}

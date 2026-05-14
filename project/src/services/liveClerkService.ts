@@ -35,6 +35,30 @@ export interface LiveAuctionSession {
   ended_at: string | null;
   created_at: string;
   updated_at: string;
+  // Cloudflare Stream
+  cf_stream_uid: string | null;
+  cf_stream_whip_url: string | null;
+  cf_stream_playback_url: string | null;
+  cf_stream_status: string | null;
+  // Online bidding
+  online_bid_mode: 'auto' | 'manual';
+  current_high_bidder_id: string | null;
+}
+
+export type OnlineBidStatus = 'pending' | 'accepted' | 'rejected' | 'superseded';
+
+export interface OnlineBid {
+  id: string;
+  session_id: string;
+  event_id: string;
+  lot_id: string | null;
+  lot_index: number;
+  user_id: string;
+  bidder_name: string;
+  bid_amount: number;
+  status: OnlineBidStatus;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface BidIncrement {
@@ -164,7 +188,7 @@ export class LiveClerkService {
   }
 
   static async advanceToLot(sessionId: string, lotIndex: number, lotId: string, currentBid = 0, askingPrice = 0): Promise<LiveAuctionSession> {
-    return this.updateSession(sessionId, { current_lot_index: lotIndex, current_lot_id: lotId, current_bid: currentBid, asking_price: askingPrice });
+    return this.updateSession(sessionId, { current_lot_index: lotIndex, current_lot_id: lotId, current_bid: currentBid, asking_price: askingPrice, current_high_bidder_id: null });
   }
 
   static async getBidIncrements(eventId: string): Promise<BidIncrement[]> {
@@ -343,6 +367,116 @@ export class LiveClerkService {
         callback(payload.new as LotResultEntry);
       })
       .subscribe();
+  }
+
+  static async submitOnlineBid(
+    sessionId: string,
+    eventId: string,
+    lotId: string | null,
+    lotIndex: number,
+    userId: string,
+    bidderName: string,
+    bidAmount: number
+  ): Promise<OnlineBid> {
+    const { data, error } = await supabase!
+      .from('online_bids')
+      .insert({
+        session_id: sessionId,
+        event_id: eventId,
+        lot_id: lotId,
+        lot_index: lotIndex,
+        user_id: userId,
+        bidder_name: bidderName,
+        bid_amount: bidAmount,
+        status: 'pending',
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    const bid = data as OnlineBid;
+    // Broadcast on the same channel the clerk subscribes to — instant delivery regardless of postgres_changes handshake timing
+    supabase!
+      .channel(`online_bids_${sessionId}`)
+      .send({ type: 'broadcast', event: 'new_bid', payload: bid })
+      .catch(() => {});
+    return bid;
+  }
+
+  static async updateOnlineBidStatus(bidId: string, status: OnlineBidStatus, sessionId?: string, userId?: string): Promise<void> {
+    const { error } = await supabase!
+      .from('online_bids')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', bidId);
+
+    if (error) throw error;
+
+    // When accepting a bid, record the new high bidder on the session so all bidders are notified instantly
+    if (status === 'accepted' && sessionId && userId) {
+      await this.updateSession(sessionId, { current_high_bidder_id: userId });
+    }
+    // When rejecting/superseding, clear the high bidder if it was this user
+    if ((status === 'rejected' || status === 'superseded') && sessionId) {
+      const { data: bid } = await supabase!.from('online_bids').select('user_id').eq('id', bidId).maybeSingle();
+      const { data: sess } = await supabase!.from('live_auction_sessions').select('current_high_bidder_id').eq('id', sessionId).maybeSingle();
+      if (bid && sess && sess.current_high_bidder_id === bid.user_id) {
+        await this.updateSession(sessionId, { current_high_bidder_id: null });
+      }
+    }
+  }
+
+  static async getPendingOnlineBids(sessionId: string): Promise<OnlineBid[]> {
+    const { data, error } = await supabase!
+      .from('online_bids')
+      .select('*')
+      .eq('session_id', sessionId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    return (data || []) as OnlineBid[];
+  }
+
+  static subscribeToOnlineBids(sessionId: string, callback: (bid: OnlineBid) => void) {
+    const seenIds = new Set<string>();
+    const dedup = (bid: OnlineBid) => {
+      // For inserts/broadcasts deduplicate; always forward updates (status changes)
+      if (bid.status !== 'pending') { callback(bid); return; }
+      if (seenIds.has(bid.id)) return;
+      seenIds.add(bid.id);
+      callback(bid);
+    };
+
+    const channel = supabase!
+      .channel(`online_bids_${sessionId}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'online_bids',
+        filter: `session_id=eq.${sessionId}`,
+      }, (payload) => dedup(payload.new as OnlineBid))
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'online_bids',
+        filter: `session_id=eq.${sessionId}`,
+      }, (payload) => callback(payload.new as OnlineBid))
+      .on('broadcast', { event: 'new_bid' }, ({ payload }) => dedup(payload as OnlineBid))
+      .subscribe((status) => {
+        // Once subscription is confirmed, re-fetch pending bids to catch anything that arrived during handshake
+        if (status === 'SUBSCRIBED') {
+          supabase!
+            .from('online_bids')
+            .select('*')
+            .eq('session_id', sessionId)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: true })
+            .then(({ data }) => { (data || []).forEach(b => dedup(b as OnlineBid)); })
+            .catch(() => {});
+        }
+      });
+
+    return channel;
   }
 
   static async resetAuctionActivity(eventId: string): Promise<void> {

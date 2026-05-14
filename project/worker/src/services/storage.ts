@@ -115,7 +115,7 @@ export class StorageService {
     }
   }
 
-  async deleteAssetGroup(assetGroupId: string, itemId?: string): Promise<void> {
+  async deleteAssetGroup(assetGroupId: string, itemId?: string): Promise<number> {
     logger.info('Deleting entire asset group folder from B2', { assetGroupId, itemId });
 
     try {
@@ -123,7 +123,7 @@ export class StorageService {
 
       if (files.length === 0) {
         logger.info('No files found for asset group', { assetGroupId });
-        return;
+        return 0;
       }
 
       const result = await this.s3Client.send(
@@ -136,20 +136,25 @@ export class StorageService {
         })
       );
 
-      if (result.Errors && result.Errors.length > 0) {
-        logger.warn('Some files failed to delete from B2', {
+      const deletedCount = result.Deleted?.length || 0;
+      const errorCount = result.Errors?.length || 0;
+
+      if (errorCount > 0) {
+        logger.error('Some files failed to delete from B2', {
           assetGroupId,
           errors: result.Errors,
-          deleted: result.Deleted?.length || 0
+          deleted: deletedCount,
+          failed: errorCount
         });
+        throw new Error(`Partial B2 deletion: ${errorCount} of ${files.length} files failed for asset group ${assetGroupId}`);
       }
 
       logger.info('Asset group folder deletion complete', {
         assetGroupId,
         filesFound: files.length,
-        deleted: result.Deleted?.length || 0,
-        errors: result.Errors?.length || 0
+        deleted: deletedCount
       });
+      return deletedCount;
     } catch (error) {
       logger.error('Asset group deletion failed', { assetGroupId, error: error as Error });
       throw error;
@@ -178,14 +183,14 @@ export class StorageService {
             Prefix: prefix,
           })
         );
-        return result.Contents?.map(obj => obj.Key || '') || [];
+        return result.Contents?.map(obj => obj.Key).filter((k): k is string => !!k) || [];
       }
 
-      // If no itemId, search all possible paths for this asset group
-      // This handles both old format (assets/{assetGroupId}/) and new format (assets/*/{assetGroupId}/)
+      // itemId missing — must scan entire bucket to find files by asset group ID.
+      // This is expensive and should rarely happen. Callers should always resolve itemId from DB first.
+      logger.warn('listAssetGroupFiles called without itemId — full bucket scan required', { assetGroupId });
       const allFiles: string[] = [];
 
-      // List all files under assets/ prefix
       let continuationToken: string | undefined;
       do {
         const result = await this.s3Client.send(

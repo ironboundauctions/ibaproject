@@ -145,7 +145,7 @@ export class DatabaseService {
        WHERE item_id = $1`,
       [itemId]
     );
-    return result.rows[0].max_order || 0;
+    return parseInt(String(result.rows[0]?.max_order ?? 0), 10);
   }
 
   async upsertVariant(
@@ -215,6 +215,9 @@ export class DatabaseService {
       ]
     );
 
+    if (!result.rows[0]) {
+      throw new Error(`upsertVariant returned no row for assetGroupId=${assetGroupId} variant=${variant}`);
+    }
     return result.rows[0].id;
   }
 
@@ -265,6 +268,9 @@ export class DatabaseService {
       );
 
       const job = result.rows[0];
+      if (!job) {
+        throw new Error(`Job not found for markJobFailed: ${jobId}`);
+      }
       const newRetryCount = job.retry_count + 1;
       const willRetry = newRetryCount < job.max_retries;
 
@@ -275,11 +281,11 @@ export class DatabaseService {
          SET status = $1,
              retry_count = retry_count + 1,
              error_message = $2,
-             run_after = NOW() + INTERVAL '${backoffSeconds} seconds',
+             run_after = NOW() + ($4 * INTERVAL '1 second'),
              completed_at = CASE WHEN $1 = 'failed' THEN NOW() ELSE completed_at END,
              updated_at = NOW()
          WHERE id = $3`,
-        [willRetry ? 'pending' : 'failed', errorMessage, jobId]
+        [willRetry ? 'pending' : 'failed', errorMessage, jobId, backoffSeconds]
       );
 
       await client.query(
@@ -309,7 +315,7 @@ export class DatabaseService {
     const result = await this.pool.query<AuctionFile>(
       `SELECT * FROM auction_files
        WHERE detached_at IS NOT NULL
-         AND detached_at < NOW()
+         AND detached_at < NOW() - INTERVAL '1 hour'
        ORDER BY detached_at ASC
        LIMIT 100`
     );
@@ -321,7 +327,7 @@ export class DatabaseService {
       `SELECT COUNT(*) as count
        FROM auction_files
        WHERE asset_group_id = $1
-         AND detached_at IS NULL`,
+         AND (detached_at IS NULL OR detached_at > NOW() - INTERVAL '1 hour')`,
       [assetGroupId]
     );
 

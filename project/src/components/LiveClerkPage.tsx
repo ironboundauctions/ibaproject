@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Gavel, AlertTriangle, RefreshCw, Users, Monitor, UserCheck, ShieldAlert } from 'lucide-react';
+import { Gavel, AlertTriangle, RefreshCw, Users, Monitor, UserCheck, ShieldAlert, Video, Globe } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { InventoryService } from '../services/inventoryService';
 import { LiveClerkService, LiveAuctionSession, BidIncrement, HistoryLogEntry, ClerkLot, SessionStatus, LotResultEntry } from '../services/liveClerkService';
+import { EventService } from '../services/eventService';
 import { formatCurrency, formatDate } from '../utils/formatters';
 import BidIncrementLadder from './liveClerk/BidIncrementLadder';
 import BidUndoPanel, { BidSnapshot } from './liveClerk/BidUndoPanel';
@@ -12,6 +13,8 @@ import CurrentLotPanel from './liveClerk/CurrentLotPanel';
 import AuctionHistoryPanel from './liveClerk/AuctionHistoryPanel';
 import MessagesPanel from './liveClerk/MessagesPanel';
 import LotCatalogPanel from './liveClerk/LotCatalogPanel';
+import OnlineBidsPanel from './liveClerk/OnlineBidsPanel';
+import ConfirmDialog from './ConfirmDialog';
 
 const MESSAGE_PRESETS = ['HURRY', 'BID FAST', 'Good Morning', 'TYVM', 'DELAY', 'Last second'];
 const PROJECTOR_PRESETS = ['Going once', 'Going twice', 'SOLD!', 'Opening bid', 'No reserve', 'Choice lot', 'Winner!'];
@@ -54,6 +57,8 @@ export default function LiveClerkPage() {
   const [enterFloorPrice, setEnterFloorPrice] = useState(true);
   const [postWithOneClick, setPostWithOneClick] = useState(false);
   const [decrementMode, setDecrementMode] = useState(false);
+  const [eventIsLive, setEventIsLive] = useState(false);
+  const [showEndLiveConfirm, setShowEndLiveConfirm] = useState(false);
 
   const sessionRef = useRef<LiveAuctionSession | null>(null);
   sessionRef.current = session;
@@ -78,7 +83,7 @@ export default function LiveClerkPage() {
       const { data: { user } } = await supabase!.auth.getUser();
       if (!user) return;
       const { data: profile } = await supabase!
-        .from('user_profiles')
+        .from('profiles')
         .select('full_name')
         .eq('id', user.id)
         .maybeSingle();
@@ -159,6 +164,7 @@ export default function LiveClerkPage() {
 
       if (eventData.error) throw eventData.error;
       setEventInfo(eventData.data as EventInfo);
+      setEventIsLive(eventData.data.status === 'active');
       setLots(eventLots);
       setSession(sess);
       setAskingPrice(sess.asking_price ?? 0);
@@ -256,6 +262,43 @@ export default function LiveClerkPage() {
     await log('auction_end', 'Auction ended');
   };
 
+  const handleGoLive = async () => {
+    if (!eventId) return;
+    try {
+      await EventService.activateEvent(eventId);
+      setEventIsLive(true);
+      // Resume the session so connected bidders immediately see the bid button re-enabled
+      if (session && session.status === 'paused') {
+        const updated = await LiveClerkService.resumeAuction(session.id);
+        setSession(updated);
+      }
+      await log('system', 'Online bidding enabled — event set to LIVE');
+    } catch (err: any) {
+      alert(`Failed to go live: ${err.message}`);
+    }
+  };
+
+  const handleEndLive = () => {
+    setShowEndLiveConfirm(true);
+  };
+
+  const confirmEndLive = async () => {
+    setShowEndLiveConfirm(false);
+    if (!eventId) return;
+    try {
+      await EventService.deactivateEvent(eventId);
+      setEventIsLive(false);
+      // Pause the session so connected bidders immediately see the bid button greyed out
+      if (session && session.status === 'running') {
+        const updated = await LiveClerkService.pauseAuction(session.id);
+        setSession(updated);
+      }
+      await log('system', 'Online bidding disabled — event set back to published');
+    } catch (err: any) {
+      alert(`Failed to end live: ${err.message}`);
+    }
+  };
+
   const handleSelectLot = async (index: number, skipLog = false) => {
     if (!session || index < 0 || index >= lots.length) return;
     const lot = lots[index];
@@ -309,10 +352,11 @@ export default function LiveClerkPage() {
     const newAsking = postedBid + amount;
     setAskingPrice(newAsking);
     if (sess.status === 'running') {
-      setBidHistory(prev => [...prev, { current_bid: sess.current_bid, asking_price: sess.asking_price }]);
+      setBidHistory(prev => [...prev, { current_bid: sess.current_bid, asking_price: sess.asking_price, current_high_bidder_id: sess.current_high_bidder_id ?? null }]);
       const updated = await LiveClerkService.updateSession(sess.id, {
         current_bid: postedBid,
         asking_price: newAsking,
+        current_high_bidder_id: null,
       });
       setSession(updated);
       await log('bid_posted', `Bid: ${formatCurrency(postedBid)} — Asking: ${formatCurrency(newAsking)}`, {
@@ -332,10 +376,11 @@ export default function LiveClerkPage() {
 
   const handleOverridePost = async (price: number) => {
     if (!session || session.status !== 'running') return;
-    setBidHistory(prev => [...prev, { current_bid: session.current_bid, asking_price: session.asking_price }]);
+    setBidHistory(prev => [...prev, { current_bid: session.current_bid, asking_price: session.asking_price, current_high_bidder_id: session.current_high_bidder_id ?? null }]);
     const updated = await LiveClerkService.updateSession(session.id, {
       current_bid: price,
       asking_price: price,
+      current_high_bidder_id: null,
     });
     setSession(updated);
     setAskingPrice(price);
@@ -428,6 +473,7 @@ export default function LiveClerkPage() {
     const updated = await LiveClerkService.updateSession(sess.id, {
       current_bid: snapshot.current_bid,
       asking_price: snapshot.asking_price,
+      current_high_bidder_id: snapshot.current_high_bidder_id,
     });
     setSession(updated);
     setAskingPrice(snapshot.asking_price);
@@ -442,30 +488,46 @@ export default function LiveClerkPage() {
       : `Reset bidding for Lot ${session.current_lot_index + 1}? This will clear the current bid and asking price.`;
     if (!window.confirm(confirmMsg)) return;
 
-    if (existingResult && currentLot.id) {
-      await LiveClerkService.clearLotResult(session.id, currentLot.id);
-      setLotResults(prev => {
-        const next = { ...prev };
-        delete next[currentLot.id];
-        return next;
-      });
-    }
+    try {
+      if (existingResult && currentLot.id) {
+        await LiveClerkService.clearLotResult(session.id, currentLot.id);
+        setLotResults(prev => {
+          const next = { ...prev };
+          delete next[currentLot.id];
+          return next;
+        });
+      }
 
-    const updated = await LiveClerkService.updateSession(session.id, { current_bid: 0, asking_price: 0 });
-    setSession(updated);
-    setAskingPrice(0);
-    setBidHistory([]);
-    setSelectedIncrement(null);
+      const updated = await LiveClerkService.updateSession(session.id, { current_bid: 0, asking_price: 0, current_high_bidder_id: null });
+      setSession(updated);
+      setAskingPrice(0);
+      setBidHistory([]);
+      setSelectedIncrement(null);
 
-    const lotLabel = `Lot ${session.current_lot_index + 1}: ${currentLot.title}`;
-    if (existingResult?.result === 'sold') {
-      await log('system', `Bidding RESET on ${lotLabel} — previous SOLD result of ${formatCurrency(existingResult.sold_price ?? 0)} cleared`, {
-        lot_id: currentLot.id, previous_result: existingResult.result, previous_price: existingResult.sold_price,
-      });
-    } else {
-      await log('system', `Bidding reset on ${lotLabel}`, { lot_id: currentLot.id });
+      const lotLabel = `Lot ${session.current_lot_index + 1}: ${currentLot.title}`;
+      if (existingResult?.result === 'sold') {
+        await log('system', `Bidding RESET on ${lotLabel} — previous SOLD result of ${formatCurrency(existingResult.sold_price ?? 0)} cleared`, {
+          lot_id: currentLot.id, previous_result: existingResult.result, previous_price: existingResult.sold_price,
+        });
+      } else {
+        await log('system', `Bidding reset on ${lotLabel}`, { lot_id: currentLot.id });
+      }
+    } catch (err: any) {
+      alert(`Reset failed: ${err.message}`);
     }
   };
+
+  const handleOnlineBidAccepted = useCallback(async (bid: any, newCurrentBid: number, newAskingPrice: number) => {
+    setSession(prev => prev ? { ...prev, current_bid: newCurrentBid, asking_price: newAskingPrice } : prev);
+    setAskingPrice(newAskingPrice);
+    setBidHistory(prev => [...prev, { current_bid: session?.current_bid ?? 0, asking_price: session?.asking_price ?? 0, current_high_bidder_id: session?.current_high_bidder_id ?? null }]);
+    await log('bid_posted', `Online bid accepted: ${formatCurrency(newCurrentBid)} from ${bid.bidder_name} — Asking: ${formatCurrency(newAskingPrice)}`, {
+      current_bid: newCurrentBid,
+      asking: newAskingPrice,
+      bidder: bid.bidder_name,
+      bidder_id: bid.user_id,
+    });
+  }, [log, session?.current_bid, session?.asking_price]);
 
   const handleSaveIncrements = async (amounts: number[]) => {
     if (!eventId) return;
@@ -518,6 +580,17 @@ export default function LiveClerkPage() {
 
   return (
     <div className="h-screen bg-ironbound-grey-900 flex flex-col overflow-hidden text-white">
+      <ConfirmDialog
+        isOpen={showEndLiveConfirm}
+        title="Turn Off Live Bidding?"
+        message="This will disable online bidding for all connected bidders immediately."
+        detail="Bidders will see the bid button greyed out until you turn live bidding back on."
+        confirmLabel="Turn Off"
+        cancelLabel="Keep Live"
+        variant="warning"
+        onConfirm={confirmEndLive}
+        onCancel={() => setShowEndLiveConfirm(false)}
+      />
       <header className="flex-shrink-0 bg-ironbound-grey-800 border-b border-ironbound-grey-700 px-4 py-2.5 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Gavel className="h-5 w-5 text-ironbound-orange-500 flex-shrink-0" />
@@ -614,6 +687,9 @@ export default function LiveClerkPage() {
             onPostWithOneClickChange={setPostWithOneClick}
             decrement={decrementMode}
             onDecrementChange={setDecrementMode}
+            eventIsLive={eventIsLive}
+            onGoLive={handleGoLive}
+            onEndLive={handleEndLive}
           />
         </div>
 
@@ -638,32 +714,8 @@ export default function LiveClerkPage() {
             />
           </div>
 
-          {/* Middle: auction history */}
-          <div className="flex-1 overflow-hidden min-h-0 border-b border-ironbound-grey-700">
-            <div className="grid grid-cols-2 h-full min-h-0">
-              <div className="p-4 border-r border-ironbound-grey-700 flex flex-col min-h-0 overflow-hidden">
-                <AuctionHistoryPanel
-                  entries={historyLog}
-                  onClear={() => setHistoryLog([])}
-                />
-              </div>
-              <div className="bg-ironbound-grey-900 flex items-center justify-center">
-                {anotherClerkActive && (
-                  <div className="text-center px-6">
-                    <ShieldAlert className="h-8 w-8 text-yellow-600 mx-auto mb-2" />
-                    <p className="text-yellow-500 text-sm font-semibold">Observing</p>
-                    <p className="text-ironbound-grey-500 text-xs mt-1">
-                      {session?.active_clerk_name} is clerking.<br />
-                      Click "Take Over" to assume control.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Bottom strip: undo + increments + lot result controls + catalog */}
-          <div className={`flex-shrink-0 border-t border-ironbound-grey-700 transition-opacity ${controlsDisabled ? 'opacity-40 pointer-events-none' : ''}`} style={{ height: '200px' }}>
+          {/* Middle: undo + increments + lot result controls + catalog */}
+          <div className={`flex-shrink-0 border-b border-ironbound-grey-700 transition-opacity ${controlsDisabled ? 'opacity-40 pointer-events-none' : ''}`} style={{ height: '200px' }}>
             <div className="grid grid-cols-[140px_1fr_1fr_1fr] h-full gap-0">
               <div className="p-3 border-r border-ironbound-grey-700 overflow-hidden flex flex-col">
                 <BidUndoPanel
@@ -708,6 +760,42 @@ export default function LiveClerkPage() {
                   sessionStatus={session?.status ?? 'idle'}
                   lotResults={lotResults}
                 />
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom: auction history + online bids */}
+          <div className="flex-1 overflow-hidden min-h-0">
+            <div className="grid grid-cols-2 h-full min-h-0">
+              <div className="p-4 border-r border-ironbound-grey-700 flex flex-col min-h-0 overflow-hidden">
+                <AuctionHistoryPanel
+                  entries={historyLog}
+                  onClear={() => setHistoryLog([])}
+                />
+              </div>
+              <div className="p-3 flex flex-col min-h-0 overflow-hidden">
+                {session ? (
+                  <OnlineBidsPanel
+                    session={session}
+                    increments={increments}
+                    onSessionUpdate={setSession}
+                    onBidAccepted={handleOnlineBidAccepted}
+                    disabled={controlsDisabled || session.status !== 'running'}
+                  />
+                ) : (
+                  anotherClerkActive ? (
+                    <div className="flex-1 flex items-center justify-center">
+                      <div className="text-center px-6">
+                        <ShieldAlert className="h-8 w-8 text-yellow-600 mx-auto mb-2" />
+                        <p className="text-yellow-500 text-sm font-semibold">Observing</p>
+                        <p className="text-ironbound-grey-500 text-xs mt-1">
+                          {session?.active_clerk_name} is clerking.<br />
+                          Click "Take Over" to assume control.
+                        </p>
+                      </div>
+                    </div>
+                  ) : null
+                )}
               </div>
             </div>
           </div>
@@ -763,11 +851,18 @@ export default function LiveClerkPage() {
             </div>
 
             <div className="bg-ironbound-grey-700/50 rounded-lg p-2.5">
-              <div className="flex items-center gap-2 mb-1.5">
-                <Users className="h-3.5 w-3.5 text-ironbound-orange-400" />
-                <span className="text-xs font-semibold text-ironbound-grey-300 uppercase tracking-wider">Interested Bidders</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Globe className="h-3.5 w-3.5 text-ironbound-orange-400" />
+                  <span className="text-xs text-ironbound-grey-300 font-semibold">Online Bidding Page</span>
+                </div>
+                <button
+                  onClick={() => eventId && window.open(`/live-bid/${eventId}`, '_blank', 'noopener,noreferrer')}
+                  className="text-xs text-ironbound-orange-400 hover:text-ironbound-orange-300 underline transition-colors"
+                >
+                  Open
+                </button>
               </div>
-              <div className="text-xs text-ironbound-grey-500 italic py-1">No bidders connected yet</div>
             </div>
 
             <div className="bg-ironbound-grey-700/50 rounded-lg p-2.5">
@@ -778,6 +873,21 @@ export default function LiveClerkPage() {
                 </div>
                 <button
                   onClick={() => eventId && window.open(`/projector/${eventId}`, '_blank', 'noopener,noreferrer')}
+                  className="text-xs text-ironbound-orange-400 hover:text-ironbound-orange-300 underline transition-colors"
+                >
+                  Open
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-ironbound-grey-700/50 rounded-lg p-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Video className="h-3.5 w-3.5 text-ironbound-orange-400" />
+                  <span className="text-xs text-ironbound-grey-300 font-semibold">Audience Video Projector</span>
+                </div>
+                <button
+                  onClick={() => eventId && window.open(`/video-projector/${eventId}`, '_blank', 'noopener,noreferrer')}
                   className="text-xs text-ironbound-orange-400 hover:text-ironbound-orange-300 underline transition-colors"
                 >
                   Open

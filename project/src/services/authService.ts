@@ -125,29 +125,59 @@ export class AuthService {
     };
   }
 
-  static async signUp(email: string, password: string, name: string): Promise<any> {
+  static async signUp(
+    email: string,
+    password: string,
+    name: string,
+    extras?: {
+      phone?: string;
+      address_line1?: string;
+      address_line2?: string;
+      city?: string;
+      state?: string;
+      zip?: string;
+    }
+  ): Promise<any> {
     if (!supabase) throw new Error('Supabase not configured');
 
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: {
-        data: { name },
-        emailRedirectTo: `${window.location.origin}/`
-      }
+      options: { data: { name } },
     });
 
     if (error) throw error;
 
-    // Always sign out immediately after signup to force email confirmation
-    if (data.session) {
-      await supabase.auth.signOut();
+    // Email confirmation is disabled — session is available immediately
+    if (data.session && data.user) {
+      // Save extended profile fields (trigger already created the base profile row)
+      if (extras) {
+        await supabase
+          .from('profiles')
+          .update({
+            phone: extras.phone || '',
+            address_line1: extras.address_line1 || '',
+            address_line2: extras.address_line2 || '',
+            city: extras.city || '',
+            state: extras.state || '',
+            zip: extras.zip || '',
+          })
+          .eq('id', data.user.id);
+      }
+
+      return {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.user_metadata?.name || name,
+        role: 'user',
+        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=f97316&color=fff`,
+      };
     }
 
-    // Return special object that indicates confirmation is required
+    // Fallback: email confirmation still required
     return {
       requiresConfirmation: true,
-      message: 'Please check your email and click the confirmation link before signing in.'
+      message: 'Please check your email and click the confirmation link before signing in.',
     };
   }
 

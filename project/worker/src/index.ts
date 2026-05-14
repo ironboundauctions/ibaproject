@@ -127,8 +127,9 @@ class MediaPublishingWorker {
           return;
         }
 
-        const files = await this.storage.listAssetGroupFiles(assetGroupId);
         const dbFiles = await this.db.getFilesByAssetGroup(assetGroupId);
+        const itemId = dbFiles.find(f => f.item_id)?.item_id || undefined;
+        const files = await this.storage.listAssetGroupFiles(assetGroupId, itemId);
 
         res.json({
           assetGroupId,
@@ -164,10 +165,13 @@ class MediaPublishingWorker {
           return;
         }
 
-        await this.storage.deleteAssetGroup(assetGroupId);
-        logger.info('Asset group deleted from B2', { assetGroupId });
-
+        // Fetch DB files first so we have itemId for the targeted B2 path
         const filesToDelete = await this.db.getFilesByAssetGroup(assetGroupId);
+        const itemId = filesToDelete.find(f => f.item_id)?.item_id || undefined;
+
+        await this.storage.deleteAssetGroup(assetGroupId, itemId);
+        logger.info('Asset group deleted from B2', { assetGroupId, itemId });
+
         const fileIds = filesToDelete.map(f => f.id);
 
         if (fileIds.length > 0) {
@@ -193,32 +197,35 @@ class MediaPublishingWorker {
         logger.info('B2 orphaned files scan requested - COMPREHENSIVE MODE');
         const startTime = Date.now();
 
-        // Get EVERY file from B2 bucket
-        const allB2Files = await this.storage.listAllFiles();
-        logger.info('All B2 files found', { totalFiles: allB2Files.length });
+        // Single B2 list + single DB query — no duplicate full-bucket scans
+        const [allB2Files, dbFileKeys, dbAssetGroups] = await Promise.all([
+          this.storage.listAllFiles(),
+          this.db.getAllFileKeys(),
+          this.db.getAllAssetGroups(),
+        ]);
+        logger.info('B2 and DB data fetched', { b2Files: allB2Files.length, dbKeys: dbFileKeys.length });
 
-        // Get all b2_key values from database
-        const dbFileKeys = await this.db.getAllFileKeys();
-        logger.info('Database file keys found', { count: dbFileKeys.length });
-
-        // Create a set of database keys for fast lookup
         const dbKeySet = new Set(dbFileKeys);
 
-        // Only flag files older than 24h as orphaned - mid-upload files may not be in DB yet
+        // Derive asset group IDs from the already-fetched file list — no second list call
+        const b2AssetGroupIds = new Set<string>();
+        for (const file of allB2Files) {
+          const parts = file.key.split('/');
+          if (parts.length >= 4 && parts[0] === 'assets') {
+            b2AssetGroupIds.add(parts[2]);
+          } else if (parts.length >= 3 && parts[0] === 'assets') {
+            b2AssetGroupIds.add(parts[1]);
+          }
+        }
+
+        // Only flag files older than 24h — mid-upload files may not be in DB yet
         const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-        // Find orphaned files - files in B2 with no matching b2_key in DB AND old enough
         const orphanedFiles = allB2Files.filter(file => {
           if (dbKeySet.has(file.key)) return false;
-          const fileAge = new Date(file.lastModified);
-          return fileAge < staleThreshold;
+          return new Date(file.lastModified) < staleThreshold;
         });
         const estimatedWastedSpace = orphanedFiles.reduce((sum, file) => sum + file.size, 0);
-
-        // Also get asset group statistics for reporting
-        const b2FilesWithAssetGroups = await this.storage.listAllAssetGroups();
-        const b2AssetGroupIds = new Set(b2FilesWithAssetGroups.map(f => f.assetGroupId));
-        const dbAssetGroups = await this.db.getAllAssetGroups();
 
         logger.info('B2 comprehensive scan complete', {
           totalB2Files: allB2Files.length,
@@ -230,7 +237,8 @@ class MediaPublishingWorker {
         });
 
         res.json({
-          totalB2Files: b2AssetGroupIds.size,
+          totalB2Files: allB2Files.length,
+          totalB2AssetGroups: b2AssetGroupIds.size,
           totalDbAssetGroups: dbAssetGroups.length,
           orphanedFiles: orphanedFiles.map(f => ({
             key: f.key,
@@ -269,18 +277,15 @@ class MediaPublishingWorker {
           // Try to identify asset group pattern
           let foundAssetGroup = false;
 
-          if (parts.length >= 3 && parts[0] === 'assets') {
-            const potentialAssetGroupId = parts[2];
-            if (potentialAssetGroupId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-              assetGroupIds.add(potentialAssetGroupId);
+          if (parts[0] === 'assets') {
+            // New format: assets/{itemId}/{assetGroupId}/file
+            if (parts.length >= 4 && parts[2].match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+              assetGroupIds.add(parts[2]);
               foundAssetGroup = true;
-            } else {
-              // Old format: assets/{assetGroupId}/file
-              const oldFormatId = parts[1];
-              if (oldFormatId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-                assetGroupIds.add(oldFormatId);
-                foundAssetGroup = true;
-              }
+            // Old format: assets/{assetGroupId}/file
+            } else if (parts.length >= 3 && parts[1].match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+              assetGroupIds.add(parts[1]);
+              foundAssetGroup = true;
             }
           }
 
@@ -301,13 +306,14 @@ class MediaPublishingWorker {
         // Delete asset group folders
         for (const assetGroupId of assetGroupIds) {
           try {
-            const files = await this.storage.listAssetGroupFiles(assetGroupId);
-            logger.info('Deleting asset group folder', { assetGroupId, fileCount: files.length });
+            // Fetch DB files to resolve itemId — deleteAssetGroup handles its own B2 listing internally
+            const dbFiles = await this.db.getFilesByAssetGroup(assetGroupId);
+            const itemId = dbFiles.find(f => f.item_id)?.item_id || undefined;
+            logger.info('Deleting asset group folder', { assetGroupId, itemId });
 
-            await this.storage.deleteAssetGroup(assetGroupId);
-
-            deleted += files.length;
-            logger.info('Asset group folder deleted', { assetGroupId, filesDeleted: files.length });
+            const b2Deleted = await this.storage.deleteAssetGroup(assetGroupId, itemId);
+            deleted += b2Deleted;
+            logger.info('Asset group folder deleted', { assetGroupId, b2Deleted });
           } catch (error) {
             logger.error('Failed to delete asset group folder', { assetGroupId, error });
             failed++;
@@ -378,6 +384,7 @@ class MediaPublishingWorker {
       try {
         logger.info('Running initial cleanup');
         await this.cleanupProcessor.processCleanup();
+        await this.cleanupProcessor.cleanupExpiredBatches();
         this.lastCleanup = new Date();
       } catch (error) {
         logger.error('Initial cleanup failed', error as Error);
@@ -411,7 +418,7 @@ class MediaPublishingWorker {
 
     process.on('uncaughtException', (error) => {
       logger.error('Uncaught exception', error);
-      this.isShuttingDown = true;
+      process.exit(1);
     });
 
     process.on('unhandledRejection', (reason) => {
@@ -432,7 +439,12 @@ class MediaPublishingWorker {
       this.cleanupTimer = null;
     }
 
+    const shutdownDeadline = Date.now() + 30_000;
     while (this.activeJobs > 0) {
+      if (Date.now() > shutdownDeadline) {
+        logger.warn(`Shutdown timeout reached with ${this.activeJobs} active jobs still running — forcing exit`);
+        break;
+      }
       logger.info(`Waiting for ${this.activeJobs} active jobs to complete`);
       await this.sleep(1000);
     }

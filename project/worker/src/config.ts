@@ -55,9 +55,9 @@ export const config: Config = {
     baseUrl: requireEnv('CDN_BASE_URL'),
   },
   worker: {
-    pollInterval: parseInt(process.env.WORKER_POLL_INTERVAL || '15000', 10),
-    maxRetries: parseInt(process.env.MAX_RETRIES || '5', 10),
+    pollInterval: Math.max(1000, parseInt(process.env.WORKER_POLL_INTERVAL || '15000', 10) || 15000),
+    maxRetries: Math.max(1, parseInt(process.env.MAX_RETRIES || '5', 10) || 5),
     logLevel: process.env.LOG_LEVEL || 'info',
-    concurrency: parseInt(process.env.CONCURRENCY || '3', 10),
+    concurrency: Math.max(1, parseInt(process.env.CONCURRENCY || '3', 10) || 3),
   },
 };

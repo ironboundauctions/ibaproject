@@ -43,8 +43,10 @@ export default function AuctioneerProjectorPage() {
   const [historyLog, setHistoryLog] = useState<HistoryLogEntry[]>([]);
   const [recentSales, setRecentSales] = useState<LotResultEntry[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentVideoUrl, setCurrentVideoUrl] = useState<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const recentBidTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     if (!eventId) return;
@@ -184,9 +186,12 @@ export default function AuctioneerProjectorPage() {
     return () => clearInterval(interval);
   }, [eventId]);
 
+  // Resolve currentLot from session — use current_lot_id directly (authoritative)
   useEffect(() => {
     if (!session || lots.length === 0) return;
-    const lot = lots[session.current_lot_index] ?? null;
+    const lot = (session.current_lot_id
+      ? lots.find((l: any) => l.id === session.current_lot_id)
+      : lots[session.current_lot_index]) ?? null;
     if (lot) {
       const hq = bestImages[lot.id];
       const images = hq && hq.length > 0
@@ -197,6 +202,43 @@ export default function AuctioneerProjectorPage() {
       setCurrentLot(null);
     }
   }, [session?.current_lot_index, session?.current_lot_id, lots, bestImages]);
+
+  // Fetch published video for the current lot
+  useEffect(() => {
+    const itemId = currentLot?.id ?? null;
+    if (!itemId) {
+      setCurrentVideoUrl(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase!
+          .from('auction_files')
+          .select('cdn_url')
+          .eq('item_id', itemId)
+          .eq('variant', 'video')
+          .eq('published_status', 'published')
+          .is('detached_at', null)
+          .not('cdn_url', 'is', null)
+          .limit(1)
+          .maybeSingle();
+        if (cancelled) return;
+        if (error) { setCurrentVideoUrl(null); return; }
+        setCurrentVideoUrl(data?.cdn_url ?? null);
+      } catch {
+        if (!cancelled) setCurrentVideoUrl(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentLot?.id]);
+
+  // Restart video from the beginning when lot changes
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.load();
+    }
+  }, [currentVideoUrl]);
 
   const handleIncomingOnlineBid = (payload: { username: string; userId: string; amount: number }) => {
     const bid: IncomingBid = {
@@ -256,7 +298,7 @@ export default function AuctioneerProjectorPage() {
   return (
     <div className="w-screen h-screen bg-[#2a2a2a] flex overflow-hidden select-none">
 
-      {/* LEFT COLUMN — lot info + image + video placeholder */}
+      {/* LEFT COLUMN — lot info + image + video */}
       <div className="flex flex-col" style={{ width: '42%' }}>
 
         {/* Lot number + title */}
@@ -278,7 +320,7 @@ export default function AuctioneerProjectorPage() {
           )}
         </div>
 
-        {/* Item image — ~quarter screen */}
+        {/* Item image */}
         <div className="bg-black relative" style={{ height: '32%' }}>
           {displayImage ? (
             <img
@@ -292,20 +334,29 @@ export default function AuctioneerProjectorPage() {
               <div className="text-[#444] text-sm font-medium">No image</div>
             </div>
           )}
-          {currentLot && currentLot.images.length > 1 && (
-            <div className="absolute bottom-2 right-2 bg-black/60 text-[#aaa] text-xs px-2 py-1 rounded">
-              {currentLot.images.length} photos
-            </div>
-          )}
         </div>
 
-        {/* Video placeholder */}
-        <div className="bg-[#111] border-t border-[#333] flex items-center justify-center" style={{ height: '22%' }}>
-          <div className="flex flex-col items-center gap-2 text-[#3a3a3a]">
-            <Video className="h-8 w-8" />
-            <span className="text-xs font-medium tracking-wider uppercase">Video Feed</span>
-            <span className="text-[10px] text-[#333]">Coming soon</span>
-          </div>
+        {/* Video panel */}
+        <div className="bg-black border-t border-[#333] relative overflow-hidden" style={{ height: '22%' }}>
+          {currentVideoUrl ? (
+            <video
+              ref={videoRef}
+              key={currentVideoUrl}
+              src={currentVideoUrl}
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="w-full h-full object-contain"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <div className="flex flex-col items-center gap-2 text-[#2e2e2e]">
+                <Video className="h-7 w-7" />
+                <span className="text-[10px] font-medium tracking-wider uppercase">No Video</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Bid prices */}
